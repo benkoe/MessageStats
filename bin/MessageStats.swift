@@ -93,6 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                     keyEquivalent: "")
     appMenu.addItem(.separator())
+    let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+    settings.target = self
+    appMenu.addItem(settings)
+    appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "Hide MessageStats",
                     action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
     appMenu.addItem(.separator())
@@ -124,6 +128,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc private func reloadPage() {
     webView.load(URLRequest(url: rootURL))
+  }
+
+  /// Routing by URL fragment rather than a JavaScript bridge. This binary is
+  /// sealed in the signed bundle while the page it drives updates itself, so
+  /// the less the two know about each other, the better.
+  @objc private func openSettings() {
+    guard let url = URL(string: "\(rootURL.absoluteString)#settings") else { return }
+    if webView.url?.fragment == "settings" {
+      webView.evaluateJavaScript("dispatchEvent(new HashChangeEvent('hashchange'))")
+    } else {
+      webView.load(URLRequest(url: url))
+    }
   }
 
   // MARK: - server

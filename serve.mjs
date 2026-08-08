@@ -19,7 +19,7 @@
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { copyFile, stat as statAsync } from "node:fs/promises";
-import { existsSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -431,6 +431,10 @@ const send = (res, code, body, type = "application/json") => {
     "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
+    // Without this, browsers cache heuristically and keep serving the old UI
+    // after `git pull` has already replaced it — the update silently doesn't
+    // arrive. Nothing here is worth caching anyway: it is all local and cheap.
+    "cache-control": "no-store",
   });
   res.end(buf);
 };
@@ -485,6 +489,13 @@ const server = createServer((req, res) => {
     // Write ai.local.json so setup can happen entirely in the browser.
     if (p === "/api/ai/config" && req.method === "POST") {
       return withBody(async (q) => {
+        // Turning the assistant off again has to be possible from the UI, or the
+        // only way back is editing ai.local.json by hand.
+        if (q.clear) {
+          const f = path.join(DATA, "ai.local.json");
+          if (existsSync(f)) unlinkSync(f);
+          return { ok: true, cleared: true };
+        }
         const preset = PROVIDERS[q.provider];
         if (!preset) throw new Error(`unknown provider "${q.provider}"`);
         if (!q.model) throw new Error("pick a model");

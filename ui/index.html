@@ -182,6 +182,10 @@ details>summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;padding:5px 0
       <div class="t"><span class="n">✨ Everything</span></div>
       <div class="p">every conversation at once</div>
     </button>
+    <button class="chat navlink" id="setbtn">
+      <div class="t"><span class="n">⚙ Settings</span></div>
+      <div class="p">data, reading, assistant</div>
+    </button>
     <div id="chatlist"></div>
   </aside>
   <main id="main"><p class="muted">Loading…</p></main>
@@ -326,6 +330,17 @@ let CHATS=[], CUR=null, OPT={merge:false,ids:[]};
 let PAGE=0;
 const newPage=()=>++PAGE;
 
+/* Preferences live in the browser, not on disk: they change how this page
+   behaves, not what the numbers are. The WKWebView keeps its own localStorage,
+   so they persist across launches of the app. */
+const PREF_DEFAULTS = { autoMerge:false };
+const PREFS = {
+  all(){ try { return {...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("messagestats.prefs")||"{}")}; }
+         catch { return {...PREF_DEFAULTS}; } },
+  get(k){ return this.all()[k]; },
+  set(k,v){ const a=this.all(); a[k]=v; localStorage.setItem("messagestats.prefs",JSON.stringify(a)); },
+};
+
 /* ---------- setup wizard ---------- */
 const MB = b => b==null? "?" : (b/1e6>=1000? (b/1e9).toFixed(2)+" GB" : Math.round(b/1e6)+" MB");
 
@@ -439,7 +454,11 @@ $("#filter").addEventListener("input",e=>{
 
 /* ---------- chat detail ---------- */
 async function openChat(id,opt){
-  if(opt) OPT=opt; else OPT={merge:false,ids:[]};
+  // merge:true folds sibling threads only — same people, different
+  // chat_identifier. Same-name-different-roster threads are never folded
+  // automatically, here or anywhere: a work group with staff churn and a chat
+  // that deliberately excludes someone are indistinguishable in the schema.
+  if(opt) OPT=opt; else OPT={merge:PREFS.get("autoMerge"),ids:[]};
   newPage();
   CUR=id;
   for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current",String(+b.dataset.id===id));
@@ -700,6 +719,11 @@ function setupForm(cfg){
   const key  = el("input",{type:"password",placeholder:"API key",autocomplete:"off"});
   const base = el("input",{type:"text",placeholder:"https://your-host/v1"});
   const model= el("select",{},el("option",{value:""},"— load models first —"));
+  // Built here, not inside box.append() below: sync() runs during construction
+  // and needs these to exist. Reading key.parentElement instead was null at
+  // that point, which threw and meant this form never rendered at all.
+  const keyWrap  = el("div",{},el("h3",{},"API key"),key);
+  const baseWrap = el("div",{style:"flex:1;min-width:200px"},el("h3",{},"Base URL"),base);
   const note = el("p",{class:"sub"});
   const saveBtn = el("button",{class:"act primary"},"Save");
   saveBtn.disabled = true;
@@ -707,8 +731,8 @@ function setupForm(cfg){
   const preset = ()=>cfg.providers.find(p=>p.id===prov.value);
   const sync = ()=>{
     const p = preset();
-    key.parentElement.style.display  = p.needsKey ? "" : "none";
-    base.parentElement.style.display = p.id==="custom" ? "" : "none";
+    keyWrap.style.display  = p.needsKey ? "" : "none";
+    baseWrap.style.display = p.id==="custom" ? "" : "none";
     note.textContent = p.local
       ? "Runs on your machine — no key, nothing sent anywhere. Expect weaker analysis than a hosted model."
       : "Statistics for the open conversation get sent to this provider when you ask a question. Every request is logged locally.";
@@ -743,9 +767,7 @@ function setupForm(cfg){
   box.append(
     el("p",{class:"sub"},"Off by default — this is the only feature that can send anything off this machine. Bring whatever you already have: ChatGPT, Claude, Gemini, or a local model."),
     el("div",{class:"row",style:"margin:10px 0"},
-      el("div",{},el("h3",{},"Provider"),prov),
-      el("div",{},el("h3",{},"API key"),key),
-      el("div",{style:"flex:1;min-width:200px"},el("h3",{},"Base URL"),base)),
+      el("div",{},el("h3",{},"Provider"),prov), keyWrap, baseWrap),
     el("div",{class:"row"},
       el("button",{class:"act",onclick:load},"Load models"),
       el("div",{style:"flex:1;min-width:220px"},model),
@@ -753,7 +775,7 @@ function setupForm(cfg){
     note,
     el("details",{},el("summary",{},"Rather edit a file?"),
       el("pre",{style:"overflow-x:auto"},el("code",{},
-`# ai.local.json, next to serve.mjs (gitignored)
+`# ~/Library/Application Support/MessageStats/ai.local.json
 { "provider": "anthropic", "model": "claude-opus-5",  "apiKey": "sk-ant-…" }
 { "provider": "openai",    "model": "<from /v1/models>", "apiKey": "sk-…" }
 { "provider": "ollama",    "model": "llama3.1" }`))));
@@ -870,6 +892,78 @@ function searchPanel(A){
 }
 const msgEl=(m,cls)=>el("div",{class:"msg "+(cls||"")},
   el("div",{class:"m-h"},`${m.who} · ${DT(m.ms)}`),el("div",{class:"m-t"},m.text));
+
+/* ---------- settings ---------- */
+async function renderSettings(){
+  const m=$("#main"); m.innerHTML=""; newPage(); resetCards();
+  CUR=null;
+  for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current","false");
+  m.append(el("h1",{},"Settings"));
+
+  const st = await api("/api/status").catch(()=>null);
+
+  /* --- data --- */
+  const data = card("Your data", null,
+    "Everything lives in ~/Library/Application Support/MessageStats — outside the app, so updates never touch it.");
+  if(st?.db?.found){
+    data.append(el("div",{class:"tiles"},
+      tile(`${N(st.db.sizeMB)} MB`,"database", st.db.wal? "WAL present ✓":"no -wal file"),
+      tile(st.db.ageHours==null?"—":(st.db.ageHours<24? st.db.ageHours.toFixed(0)+"h":Math.round(st.db.ageHours/24)+"d"),
+        "since the newest message", st.db.newest? D(st.db.newest):null),
+      tile(N(st.names.count),"names known",
+        st.names.unnamedTotal? `${N(st.names.unnamedTotal)} handles unnamed`:null)));
+  } else {
+    data.append(el("p",{class:"sub"},"No database imported yet."));
+  }
+  data.append(el("div",{class:"row"},
+    el("button",{class:"act primary",onclick:()=>renderSetup(st,{refresh:true})},"Re-import or re-read Contacts")));
+  m.append(data);
+
+  /* --- reading --- */
+  const auto = el("input",{type:"checkbox"});
+  auto.checked = PREFS.get("autoMerge");
+  auto.addEventListener("change",()=>PREFS.set("autoMerge",auto.checked));
+  const label = el("label",{style:"display:flex;gap:9px;align-items:flex-start;cursor:pointer"},
+    auto, el("span",{},el("b",{},"Merge split threads automatically"),
+      el("div",{class:"sub"},"Open a conversation with its sibling threads already folded in — same people, different chat_identifier, from a recreated group, a rename, or an SMS fork.")));
+  const read = card("Reading conversations", label);
+  read.append(el("div",{class:"flag info"},el("div",{},
+    el("b",{},"Threads that share a name but not a roster are never merged automatically. "),
+    "A work group where people join and leave looks identical to a chat that deliberately excludes someone, and merging the second kind credits the excluded person with none of hundreds of messages they were never party to. Those stay a per-conversation decision.")));
+  m.append(read);
+
+  /* --- assistant --- */
+  const ai = card("Assistant", el("p",{class:"muted"},"Loading…"),
+    "Off by default. The only feature that can send anything off this machine.");
+  m.append(ai);
+  api("/api/ai").then(cfg=>{
+    ai.querySelector(".muted")?.remove();
+    if(cfg.configured){
+      ai.append(el("p",{class:"sub"},
+        cfg.local? `Running on ${cfg.label} — nothing leaves this machine.`
+                 : `Using ${cfg.label} (${cfg.model}). Statistics for the open conversation are sent when you ask a question; every request is logged to ai-sent.local.jsonl.`));
+      const swap = el("button",{class:"act"},"Change provider or model");
+      const off  = el("button",{class:"act"},"Turn off and forget the key");
+      const slot = el("div",{});
+      swap.addEventListener("click",()=>{ swap.disabled=true; slot.append(setupForm(cfg)); });
+      off.addEventListener("click",async ()=>{
+        off.disabled=true; off.textContent="Removing…";
+        await fetch("/api/ai/config",{method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({clear:true})});
+        location.reload();
+      });
+      ai.append(el("div",{class:"row"},swap,off),slot);
+    } else {
+      ai.append(setupForm(cfg));
+    }
+  }).catch(()=>ai.append(el("p",{class:"muted"},"Couldn't read the assistant config.")));
+
+  /* --- about --- */
+  m.append(card("About",el("div",{class:"sub"},
+    el("div",{},"Data folder: ",el("code",{},"~/Library/Application Support/MessageStats")),
+    el("div",{style:"margin-top:6px"},"Code folder: ",el("code",{},"~/Library/Application Support/MessageStats/app")),
+    el("div",{style:"margin-top:6px"},"The app updates itself from the repo every time it launches."))));
+}
 
 /* ---------- overview: the whole library at once ---------- */
 
@@ -997,8 +1091,15 @@ async function boot(skipSetup){
   renderOverview(m,gen);
 }
 
-$("#ovbtn").addEventListener("click",()=>boot(true));
-boot();
+$("#ovbtn").addEventListener("click",()=>{ location.hash=""; boot(true); });
+$("#setbtn").addEventListener("click",()=>{ location.hash="settings"; renderSettings(); });
+// The app's Settings menu item navigates the web view to #settings rather than
+// needing a JavaScript bridge into the sealed Swift binary.
+addEventListener("hashchange",()=>{ if(location.hash==="#settings") renderSettings(); });
+if(location.hash==="#settings"){
+  // Still needs the chat list in the sidebar, so boot first, then swap the pane.
+  boot(true).then(renderSettings);
+} else boot();
 </script>
 </body>
 </html>
