@@ -12,10 +12,22 @@ node stats.mjs --chat <ROWID>        # the full analysis
 node stats.mjs --chat <ROWID> --merge  # ... when the chat is split (see below)
 ```
 
-`chat.db` and its `-wal`/`-shm` siblings live in this folder, alongside
-`names.json` (names + handle aliases), which every script picks up
-automatically. **Nothing here ever touches `~/Library/Messages`** — it works
-on a Finder copy, which is why no Full Disk Access is involved.
+`chat.db` and its `-wal`/`-shm` siblings live in
+`~/Library/Application Support/MessageStats/`, alongside `names.json` (names +
+handle aliases), which every script picks up automatically. **Not in this
+folder** — the app replaces this repo wholesale with `git pull` on every
+launch, so nothing of yours can survive inside it. Override with
+`MESSAGESTATS_DATA`.
+
+The CLI reads that copy and never touches `~/Library/Messages`. The web UI can
+*create* the copy for you, which is the one thing that needs Full Disk Access;
+`node serve.mjs` alone does not.
+
+Build, signing and release knowledge lives in `CLAUDE.local.md`, which is
+gitignored because this repo is public and that file names certificates and
+release mechanics. Read it before touching anything in `bin/`.
+
+@CLAUDE.local.md
 
 ## Preflight — do this first, every session
 
@@ -68,8 +80,9 @@ Then tell the user, in a line or two, what you found:
   roster while their messages remain, so a merged group can show senders who
   appear on no membership list at all.
 
-  Confirmed decisions for this machine's copy live in `NOTES.local.md`, which
-  is gitignored. Check there before asking a question that's already settled.
+  Confirmed decisions for this machine's copy live in `NOTES.local.md`, next to
+  the database in `~/Library/Application Support/MessageStats/` — not in this
+  repo. Check there before asking a question that's already settled.
 
 Names it can't find (numbers not in Contacts) are listed busiest-first. If
 one of them has a lot of messages in the chat the user cares about, ask who it is
