@@ -7,21 +7,53 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 /* ---------------- database ---------------- */
 
+/**
+ * Where MessageStats keeps YOUR data — the database copy, names.json, the
+ * assistant config. Deliberately NOT the repo: the repo is code, and code gets
+ * replaced wholesale by `git pull` on every launch. Anything of yours living
+ * next to the scripts would be one bad merge away from being lost, and would
+ * make your checkout differ from everyone else's.
+ *
+ * Override with MESSAGESTATS_DATA for testing or a second profile.
+ */
+export function dataDir() {
+  const custom = process.env.MESSAGESTATS_DATA;
+  const dir = custom
+    ? path.resolve(custom)
+    : path.join(os.homedir(), "Library", "Application Support", "MessageStats");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** The names file, in the data directory unless overridden. */
+export function resolveNamesPath(argv) {
+  const explicit = arg(argv, "names");
+  if (explicit) return path.resolve(explicit);
+  // A names.json sitting beside the scripts still wins, so an existing
+  // checkout keeps working after this change.
+  const legacy = path.resolve(process.cwd(), "names.json");
+  if (existsSync(legacy)) return legacy;
+  return path.join(dataDir(), "names.json");
+}
+
 export function resolveDbPath(argv) {
   const explicit = arg(argv, "db");
   if (explicit) return path.resolve(explicit);
-  // Accept the copy either in ./Messages/ or dropped straight in beside the
-  // scripts, because both are the obvious place to put it.
-  for (const candidate of ["Messages/chat.db", "chat.db"]) {
-    const full = path.resolve(process.cwd(), candidate);
-    if (existsSync(full)) return full;
-  }
-  return path.resolve(process.cwd(), "Messages/chat.db");
+  // Data directory first; then the legacy in-repo locations, so anyone who
+  // already had a copy beside the scripts is not suddenly told to re-import.
+  const candidates = [
+    path.join(dataDir(), "chat.db"),
+    path.resolve(process.cwd(), "Messages/chat.db"),
+    path.resolve(process.cwd(), "chat.db"),
+  ];
+  for (const full of candidates) if (existsSync(full)) return full;
+  return candidates[0];
 }
 
 export function openDb(dbPath) {

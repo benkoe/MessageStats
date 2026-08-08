@@ -51,7 +51,9 @@ if [ "$MAJOR" -lt 24 ]; then
   exit 1
 fi
 
-# Update before starting. --ff-only so a local edit is reported, never clobbered.
+# Update before starting. Read-only by construction: this only ever runs fetch
+# and pull --ff-only. It never pushes, never commits, never rewrites history.
+# --ff-only so a local edit is reported rather than clobbered.
 GIT=$(find_bin git) || GIT=""
 if [ -n "$GIT" ] && [ -d "$REPO/.git" ]; then
   echo "Checking for updates…"

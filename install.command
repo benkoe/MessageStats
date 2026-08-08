@@ -7,7 +7,7 @@
 
 set -uo pipefail
 REPO_URL="${MESSAGESTATS_REPO:-https://github.com/benkoe/MessageStats.git}"
-DEST="$HOME/Applications/MessageStats"
+DEST="$HOME/Library/Application Support/MessageStats/app"
 
 printf '\n  MessageStats installer\n  ──────────────────────\n\n'
 
@@ -53,7 +53,7 @@ GIT=$(find_bin git) || {
 }
 echo "  ✓ git"
 
-mkdir -p "$HOME/Applications"
+mkdir -p "$HOME/Applications" "$HOME/Library/Application Support/MessageStats"
 if [ -d "$DEST/.git" ]; then
   echo "  • Already installed — updating…"
   "$GIT" -C "$DEST" pull --ff-only --quiet || echo "    (couldn't fast-forward; leaving as-is)"
@@ -64,7 +64,11 @@ else
     echo; read -r -p "  Press return to close." _; exit 1
   fi
 fi
-echo "  ✓ Installed"
+# Pull-only, belt and braces. GitHub already refuses pushes from anyone who is
+# not a collaborator, but this makes it impossible from here even by accident.
+"$GIT" -C "$DEST" remote set-url --push origin DISABLED-pull-only 2>/dev/null
+"$GIT" -C "$DEST" config --local push.default nothing 2>/dev/null
+echo "  ✓ Installed (pull-only — this copy cannot push)"
 
 chmod +x "$DEST/bin/"*.sh 2>/dev/null
 APP=$(bash "$DEST/bin/make-app.sh" "$HOME/Applications")

@@ -19,14 +19,14 @@
 import {
   appleMicrosToMs, arg, chatSummaries, DATE_TO_MICROS, findSameNameChats,
   findSiblingChats, loadIdentities, normalizeHandle, openDb, pad, padL,
-  REAL_MESSAGE_WHERE, resolveDbPath,
+  REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath
 } from "./lib.mjs";
 
 const argv = process.argv.slice(2);
 const minCount = Number(arg(argv, "min") ?? 1);
 const limit = Number(arg(argv, "limit") ?? 60);
 const search = (arg(argv, "search") ?? "").toLowerCase();
-const { names, canonical } = loadIdentities(arg(argv, "names") ?? "names.json");
+const { names, canonical } = loadIdentities(resolveNamesPath(argv));
 
 let db;
 try {

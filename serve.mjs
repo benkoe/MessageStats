@@ -27,7 +27,8 @@ import { fileURLToPath } from "node:url";
 import {
   appleMicrosToMs, arg, chatRosters, chatSummaries, DATE_TO_MICROS,
   findSameNameChats, findSiblingChats, loadIdentities, messageText,
-  normalizeHandle, openDb, REAL_MESSAGE_WHERE, resolveDbPath,
+  normalizeHandle, openDb, REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath,
+  dataDir,
 } from "./lib.mjs";
 import { analyze, loadMessages, resolveChats, resolveMe } from "./analyze.mjs";
 import { ask as llmAsk, listModels, loadConfig as loadAiConfig, PROVIDERS } from "./llm.mjs";
@@ -35,7 +36,9 @@ import { ask as llmAsk, listModels, loadConfig as loadAiConfig, PROVIDERS } from
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const PORT = Number(arg(argv, "port") ?? 4173);
-const NAMES_PATH = arg(argv, "names") ?? path.join(HERE, "names.json");
+const NAMES_PATH = resolveNamesPath(argv);
+// Your data lives outside the repo: git pull replaces the repo on every launch.
+const DATA = dataDir();
 const DB_PATH = resolveDbPath(argv);
 
 /* ---------------- state ---------------- */
@@ -160,8 +163,8 @@ async function importSnapshot() {
   for (const p of PARTS) {
     const from = path.join(LIVE_DIR, p);
     if (!existsSync(from)) continue;
-    await copyFile(from, path.join(HERE, p));
-    copied.push({ name: p, bytes: (await statAsync(path.join(HERE, p))).size });
+    await copyFile(from, path.join(DATA, p));
+    copied.push({ name: p, bytes: (await statAsync(path.join(DATA, p))).size });
   }
   return { ok: true, copied, messagesRunning: await messagesRunning() };
 }
@@ -375,7 +378,7 @@ function brief(A, { search } = {}) {
 }
 
 async function aiAsk({ chatId, merge, mergeIds, question, searchFor }) {
-  const cfg = loadAiConfig(HERE);
+  const cfg = loadAiConfig(DATA);
   if (cfg.error) throw new Error(cfg.error);
   if (!cfg.configured) throw new Error("The assistant is not configured. Create ai.local.json.");
   const A = chatDetail(chatId, { merge, mergeIds, top: 12 });
@@ -387,7 +390,7 @@ async function aiAsk({ chatId, merge, mergeIds, question, searchFor }) {
     system: AI_SYSTEM,
     user: `${context}\n\n---\nQUESTION: ${question}`,
     maxTokens: 4096,
-    logDir: HERE,
+    logDir: DATA,
   });
   return { answer, provider: cfg.label, model: cfg.model, local: cfg.local, contextChars: context.length };
 }
@@ -425,7 +428,7 @@ const server = createServer((req, res) => {
     }
     if (p === "/api/status") return send(res, 200, status());
     if (p === "/api/ai") {
-      const cfg = loadAiConfig(HERE);
+      const cfg = loadAiConfig(DATA);
       return send(res, 200, {
         ...cfg, key: undefined,   // never echo the key back to the browser
         providers: Object.entries(PROVIDERS).map(([id, v]) =>
@@ -465,8 +468,8 @@ const server = createServer((req, res) => {
         if (q.baseUrl) cfg.baseUrl = q.baseUrl;
         // Only persist a key we were actually handed — an env-var key stays in the env.
         if (q.apiKey) cfg.apiKey = q.apiKey;
-        writeFileSync(path.join(HERE, "ai.local.json"), JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
-        const saved = loadAiConfig(HERE);
+        writeFileSync(path.join(DATA, "ai.local.json"), JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+        const saved = loadAiConfig(DATA);
         if (saved.error) throw new Error(saved.error);
         return { ok: true, label: saved.label, model: saved.model, local: saved.local };
       });

@@ -18,7 +18,7 @@
 
 import {
   arg, bar, chatRosters, day, flag, head, human, loadIdentities, openDb, pad,
-  padL, pct, quote, resolveDbPath,
+  padL, pct, quote, resolveDbPath, resolveNamesPath
 } from "./lib.mjs";
 import { analyze, loadMessages, resolveChats, resolveMe } from "./analyze.mjs";
 
@@ -47,7 +47,7 @@ try {
   console.error(`\n${err.message}\n`);
   process.exit(1);
 }
-const { names, canonical } = loadIdentities(arg(argv, "names") ?? "names.json");
+const { names, canonical } = loadIdentities(resolveNamesPath(argv));
 
 const resolved = resolveChats(db, { chatId, merge: MERGE, mergeIds: MERGE_IDS, canonical });
 if (!resolved) {
