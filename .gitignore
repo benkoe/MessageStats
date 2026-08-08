@@ -17,3 +17,6 @@ ai-sent.local.jsonl
 *.db-wal
 *.db-shm
 .DS_Store
+
+# Build output: signed disk images, staging.
+dist/

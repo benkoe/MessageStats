@@ -71,10 +71,21 @@ if [ -n "$GIT" ] && [ -d "$REPO/.git" ]; then
 fi
 
 PORT="${MESSAGESTATS_PORT:-4173}"
-# If it's already running, just focus the tab rather than failing to bind.
+
+# MessageStats.app sets this: it shows the UI in its own window, so opening a
+# browser tab as well would be one window too many. Unset (running from a
+# terminal, or from the fallback bundle) it behaves as it always did.
+OPEN_UI=1
+[ -n "${MESSAGESTATS_NO_OPEN:-}" ] && OPEN_UI=0
+
+# If it's already running, stand down rather than fight for the port.
 if curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/api/status" 2>/dev/null; then
-  open "http://127.0.0.1:$PORT/"
-  echo "MessageStats was already running — opened it in your browser."
+  if [ "$OPEN_UI" = 1 ]; then
+    open "http://127.0.0.1:$PORT/"
+    echo "MessageStats was already running — opened it in your browser."
+  else
+    echo "MessageStats was already running on port $PORT."
+  fi
   exit 0
 fi
 
@@ -87,10 +98,10 @@ for _ in $(seq 1 40); do
   curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/api/status" 2>/dev/null && break
   sleep 0.25
 done
-open "http://127.0.0.1:$PORT/"
+[ "$OPEN_UI" = 1 ] && open "http://127.0.0.1:$PORT/"
 
 echo ""
 echo "  MessageStats is running at http://127.0.0.1:$PORT"
-echo "  Close this window (or press Ctrl-C) to stop it."
+[ "$OPEN_UI" = 1 ] && echo "  Close this window (or press Ctrl-C) to stop it."
 echo ""
 wait $SERVER

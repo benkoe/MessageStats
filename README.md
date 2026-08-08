@@ -8,24 +8,59 @@ macOS only — it reads the Messages database, which is a macOS thing.
 
 ## Install
 
-**Double-click `install.command`.** That is the whole thing. It checks for
-Node.js and git, offers a download link if either is missing, downloads
-MessageStats to your Applications folder, and builds a **MessageStats.app** you
-can open like any other app. No terminal commands.
+**Open `MessageStats.dmg` and drag MessageStats to Applications.** Then open
+it like any other app. It's signed and notarized, so there's no warning to
+click through.
+
+It runs in its own window, with a Dock icon and ⌘Q like anything else —
+closing it stops the server rather than leaving it running in the background.
+No browser involved.
 
 Two notes for whoever you send it to:
 
-- **First launch:** macOS blocks apps from unidentified developers, so the first
-  time, **right-click → Open** instead of double-clicking. Once. After that it
-  opens normally.
+- **Actually drag it to Applications** — don't run it from the disk image.
+  Full Disk Access is granted to an app where it currently sits, so granting
+  it to a copy that only exists on a mounted image means it evaporates on
+  eject, and the next launch asks again.
 - **Full Disk Access:** System Settings → Privacy & Security → Full Disk Access
   → turn on **MessageStats**. That is what lets it copy your message database.
   Granting it to one small app is a much smaller ask than granting it to
   Terminal, which would give it to everything you ever run.
 
-**Updates are automatic.** The app runs `git pull` *before* starting the
-server, so a launch always runs the current version — no restart, nothing to
-reinstall. Push to `main` and everyone gets it next time they open it.
+It needs **Node.js 24+** and **git** on the machine. If either is missing the
+app says so and links to the download rather than failing silently.
+
+**Updates are automatic.** The app bundle is a stub — the actual code lives in
+`~/Library/Application Support/MessageStats/app` and the app runs `git pull`
+*before* starting the server, so a launch always runs the current version. Push
+to `main` and everyone gets it next time they open it, with no new download.
+
+### Building it yourself
+
+If you'd rather not run a binary someone sent you, clone this repo and run
+`bin/make-app.sh` — it builds the same bundle locally. That copy is unsigned,
+so macOS blocks it the first time: **right-click → Open**, once. Or skip the
+app entirely and run `node serve.mjs`.
+
+Building the window needs `swiftc`, which ships with the same Command Line
+Tools as git. Without it you still get a working app, but it falls back to
+serving the UI into your default browser — no window, no ⌘Q.
+
+The DMG is the only *distributed* form on purpose. An earlier version shipped
+an installer script that built a second copy on the recipient's machine, which
+meant two bundles with the same identifier competing for one Full Disk Access
+grant — confusing to grant and worse to debug.
+
+### Cutting a release
+
+Only needed when something in `bin/` changes; everything else ships via `git
+pull`. Requires a Developer ID Application certificate and notary credentials
+in your keychain — `bin/sign.sh` checks for both and tells you how to get them.
+
+```
+bin/sign.sh                  # → dist/MessageStats.dmg, signed and notarized
+bin/sign.sh --skip-notarize  # fast local check; still Gatekeepered
+```
 
 ### Running it directly
 
@@ -125,7 +160,8 @@ would need Full Disk Access, and it's the live database. Instead:
    messages sit unflushed in the write-ahead log and the newest history is
    silently missing.
 2. In Finder, ⇧⌘G → `~/Library/Messages`
-3. Copy **all three** files into a `Messages/` folder next to these scripts:
+3. Copy **all three** files into
+   `~/Library/Application Support/MessageStats/`:
    - `chat.db`
    - `chat.db-wal`
    - `chat.db-shm`
@@ -133,7 +169,11 @@ would need Full Disk Access, and it's the live database. Instead:
 All three matter. `chat.db` alone opens fine and quietly omits whatever was
 still in the WAL — which is exactly the most recent stuff you care about.
 
-Or pass `--db /somewhere/else/chat.db`.
+That folder, not the repo, is where your data lives — `git pull` replaces the
+repo wholesale on every launch, so nothing of yours can survive inside it.
+`names.json`, `ai.local.json` and `NOTES.local.md` live there too. Set
+`MESSAGESTATS_DATA` to use a different folder, or pass
+`--db /somewhere/else/chat.db` for a one-off.
 
 **Delete the copy when you're done.** It's your entire message history, in
 plaintext, typically 1–2 GB.
