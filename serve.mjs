@@ -30,7 +30,7 @@ import {
   normalizeHandle, openDb, REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath,
   dataDir,
 } from "./lib.mjs";
-import { analyze, loadMessages, resolveChats, resolveMe } from "./analyze.mjs";
+import { analyze, loadMessages, overview, resolveChats, resolveMe } from "./analyze.mjs";
 import { ask as llmAsk, listModels, loadConfig as loadAiConfig, PROVIDERS } from "./llm.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -244,6 +244,22 @@ function chatDetail(chatId, { merge = false, mergeIds = [], top = 10 }) {
   A.named = resolved.named;
   cache.set(key, A);
   return A;
+}
+
+/**
+ * The whole library at once. Cached because it scans every message row twice —
+ * about two seconds on a 700k-message database, which is fine once and far too
+ * slow on every visit to the page you land on. invalidate() clears it along
+ * with everything else when names or the snapshot change.
+ */
+function overviewData() {
+  const d = getDb();
+  if (!d) return null;
+  if (cache.has("overview")) return cache.get("overview");
+  const { names, canonical } = identities();
+  const O = overview(d, { names, canonical });
+  cache.set("overview", O);
+  return O;
 }
 
 /** Full-text search inside one conversation, with surrounding messages. */
@@ -487,6 +503,10 @@ const server = createServer((req, res) => {
     if (p === "/api/import" && req.method === "POST") {
       return importSnapshot().then((r) => send(res, r.ok ? 200 : 400, r))
         .catch((e) => send(res, 500, { ok: false, error: e.message }));
+    }
+    if (p === "/api/overview") {
+      const O = overviewData();
+      return O ? send(res, 200, O) : send(res, 404, { error: "no database yet" });
     }
     if (p === "/api/chats") return send(res, 200, chats({ min: Number(qs.get("min") ?? 1), limit: Number(qs.get("limit") ?? 400) }));
 

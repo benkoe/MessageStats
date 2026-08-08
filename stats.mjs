@@ -256,12 +256,81 @@ for (const s of A.signature.people) {
 }
 console.log(`  (Nx = how many times more often than the rest of the group; min ${A.signature.minUses} uses)`);
 
+if (A.pickedUp) {
+  head("Words they picked up — not there at the start, a habit by the end");
+  for (const s of A.pickedUp.people) {
+    console.log(`  \x1b[1m${s.who}\x1b[0m`);
+    console.log(`    ${s.words.map((w) => `${w.word} (${w.n}×, from ${day(w.at)})`).join(", ")}`);
+  }
+  console.log(`  (first used at least a fifth of the way in, then used ${A.pickedUp.minUses}+ times)`);
+}
+
 if (A.emoji.overall.length) {
   head("Emoji");
   console.log(`  overall  ${A.emoji.overall.map((e) => `${e.emoji} ${e.n}`).join("   ")}`);
   for (const p of P) {
     if (p.topEmoji.length) console.log(`  ${pad(p.who, 14)} ${p.topEmoji.map((e) => `${e.emoji} ${e.n}`).join("  ")}`);
   }
+}
+
+/* ---------------- attachments ---------------- */
+
+const size = (b) =>
+  b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.round(b / 1e3)} KB`;
+
+if (A.attachments) {
+  head("Attachments");
+  if (A.attachments.total) {
+    console.log(`  ${pad("", 14)}${padL("FILES", 8)}${padL("SIZE", 10)}   WHAT`);
+    for (const p of P) {
+      if (!p.attachments) continue;
+      console.log(
+        `  ${pad(p.who, 14)}${padL(p.attachments.toLocaleString(), 8)}${padL(size(p.attachmentBytes), 10)}   ` +
+          p.attachmentKinds.map((k) => `${k.kind} ${k.n}`).join(", ")
+      );
+    }
+    console.log(`\n  ${A.attachments.total.toLocaleString()} files, ${size(A.attachments.bytes)} in total`);
+    const years = Object.entries(A.attachments.byYear);
+    if (years.length > 1) {
+      const max = Math.max(...years.map(([, n]) => n));
+      console.log();
+      for (const [y, n] of years) console.log(`    ${y}  ${padL(n.toLocaleString(), 6)}  ${bar(n, max, 20)}`);
+    }
+  }
+  // Kept out of every number above: see attachmentKind() in analyze.mjs.
+  if (A.attachments.linkCards) {
+    console.log(
+      `\n  Plus ${A.attachments.linkCards.toLocaleString()} link preview cards, which iMessage generates` +
+        `\n  automatically for URLs. Not counted above — they aren't something anyone sent.`
+    );
+  }
+}
+
+if (A.edits) {
+  head("Second thoughts");
+  console.log(`  ${pad("", 14)}${padL("UNSENT", 9)}${padL("EDITED", 9)}`);
+  for (const p of P) {
+    if (!p.unsent && !p.edited) continue;
+    console.log(`  ${pad(p.who, 14)}${padL(p.unsent.toLocaleString(), 9)}${padL(p.edited.toLocaleString(), 9)}`);
+  }
+  if (!A.edits.unsent) console.log(`  No unsent messages recorded — macOS only keeps them from Ventura on.`);
+}
+
+if (A.read) {
+  head("Read receipts");
+  const line = (side, what) => {
+    if (!side) return `  ${pad(what, 22)}—`;
+    return `  ${pad(what, 22)}${side.medianMs == null
+      ? `${side.n} sample${side.n === 1 ? "" : "s"} — too few to draw a median from`
+      : `${human(side.medianMs)} median  (${side.n.toLocaleString()} messages)`}`;
+  };
+  console.log(line(A.read.byThem, "they read yours in"));
+  console.log(line(A.read.byMe, "you read theirs in"));
+  console.log(
+    `\n  Only counts messages where the reader had read receipts on, which is` +
+      `\n  ${(A.read.coverage * 100).toFixed(0)}% of this conversation. A low count on one side usually just` +
+      `\n  means that person keeps them switched off.`
+  );
 }
 
 /* ---------------- odds and ends ---------------- */

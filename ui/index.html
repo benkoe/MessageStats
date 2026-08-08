@@ -17,6 +17,10 @@
   --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
   --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
   --seq-lo:#cde2fb; --seq-mid:#3987e5; --seq-hi:#2a78d6;
+  /* Shape and depth live here so light and dark share one set of curves. */
+  --r-card:18px; --r-tile:14px; --r-ctl:11px;
+  --lift:0 1px 2px rgba(11,11,11,.04), 0 8px 24px -12px rgba(11,11,11,.18);
+  --lift-hi:0 2px 4px rgba(11,11,11,.05), 0 14px 34px -14px rgba(11,11,11,.26);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme=light])) {
@@ -27,6 +31,8 @@
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
     --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
     --seq-lo:#104281; --seq-mid:#2a78d6; --seq-hi:#86b6ef;
+  --lift:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+  --lift-hi:0 2px 6px rgba(0,0,0,.35), 0 14px 34px -14px rgba(0,0,0,.7);
   }
 }
 :root[data-theme=dark] {
@@ -37,13 +43,15 @@
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
   --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
   --seq-lo:#104281; --seq-mid:#2a78d6; --seq-hi:#86b6ef;
+  --lift:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+  --lift-hi:0 2px 6px rgba(0,0,0,.35), 0 14px 34px -14px rgba(0,0,0,.7);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--ink);
   font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--s1)}
 h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.01em}
-h1{font-size:22px} h2{font-size:15px} h3{font-size:13px;color:var(--ink-2)}
+h1{font-size:26px;letter-spacing:-.02em} h2{font-size:16px} h3{font-size:13px;color:var(--ink-2)}
 .wrap{display:grid;grid-template-columns:288px 1fr;min-height:100vh}
 @media (max-width:860px){.wrap{grid-template-columns:1fr}#side{position:static;height:auto;max-height:40vh}}
 
@@ -52,16 +60,22 @@ h1{font-size:22px} h2{font-size:15px} h3{font-size:13px;color:var(--ink-2)}
   height:100vh;overflow:auto;padding:16px 0}
 .brand{padding:0 16px 12px;display:flex;align-items:baseline;gap:8px}
 .brand b{font-size:15px}
-.brand span{font-size:11px;color:var(--muted)}
+.brand span{font-size:11px;color:var(--muted);cursor:pointer;border-bottom:1px dotted transparent}
+.brand span:hover{color:var(--ink);border-bottom-color:currentColor}
 .search-box{margin:0 12px 10px}
 input,select,button{font:inherit;color:inherit}
 input[type=search],input[type=text],input[type=date],select{
-  width:100%;padding:7px 10px;border:1px solid var(--ring);border-radius:8px;
-  background:var(--page);color:var(--ink)}
-.chat{display:block;width:100%;text-align:left;padding:9px 16px;border:0;background:none;
-  cursor:pointer;border-left:2px solid transparent}
-.chat:hover{background:color-mix(in oklab,var(--s1) 7%,transparent)}
-.chat[aria-current=true]{background:color-mix(in oklab,var(--s1) 12%,transparent);border-left-color:var(--s1)}
+  width:100%;padding:8px 12px;border:1px solid var(--ring);border-radius:var(--r-ctl);
+  background:var(--page);color:var(--ink);transition:border-color .14s ease, box-shadow .14s ease}
+input:focus-visible,select:focus-visible{outline:none;border-color:var(--s1);
+  box-shadow:0 0 0 3px color-mix(in oklab,var(--s1) 22%,transparent)}
+.chat{display:block;width:calc(100% - 16px);text-align:left;padding:9px 13px;border:0;background:none;
+  cursor:pointer;margin:1px 8px;border-radius:12px;transition:background .14s ease, transform .14s ease}
+.chat:hover{background:color-mix(in oklab,var(--s1) 8%,transparent);transform:translateX(2px)}
+.chat[aria-current=true]{background:color-mix(in oklab,var(--s1) 15%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--s1) 30%,transparent)}
+.navlink{margin-bottom:8px;background:color-mix(in oklab,var(--s4) 12%,transparent)}
+.navlink:hover{background:color-mix(in oklab,var(--s4) 20%,transparent)}
 .chat .t{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 .chat .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat .c{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
@@ -69,7 +83,14 @@ input[type=search],input[type=text],input[type=date],select{
 
 /* main */
 main{padding:22px 26px 64px;max-width:1080px}
-.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:16px 18px;margin:14px 0}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:var(--r-card);
+  padding:18px 20px;margin:16px 0;box-shadow:var(--lift);
+  transition:box-shadow .18s ease, transform .18s ease}
+.card:hover{box-shadow:var(--lift-hi)}
+.card>h2{display:flex;align-items:center;gap:9px}
+.card>h2::before{content:"";width:9px;height:9px;border-radius:50%;
+  background:var(--accent,var(--s1));flex:0 0 auto}
+/* The accent itself is set per card in JS — see card(). */
 .head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:baseline}
 .sub{color:var(--ink-2);font-size:13px}
 .flag{display:flex;gap:9px;padding:11px 13px;border-radius:10px;font-size:13px;margin:10px 0;
@@ -77,16 +98,22 @@ main{padding:22px 26px 64px;max-width:1080px}
 .flag.warn{background:color-mix(in oklab,var(--warn) 12%,var(--surface))}
 .flag.info{background:color-mix(in oklab,var(--s1) 9%,var(--surface))}
 .flag b{font-weight:650}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:14px 0}
-.tile{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:11px 13px}
-.tile .v{font-size:21px;font-weight:650;letter-spacing:-.02em}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:11px;margin:16px 0}
+.tile{border:1px solid var(--ring);border-radius:var(--r-tile);padding:13px 15px;
+  background:linear-gradient(155deg,color-mix(in oklab,var(--accent,var(--s1)) 13%,var(--surface)),var(--surface) 78%);
+  box-shadow:var(--lift);transition:transform .18s ease, box-shadow .18s ease}
+.tile:hover{transform:translateY(-2px);box-shadow:var(--lift-hi)}
+.tiles>.tile:nth-child(4n+1){--accent:var(--s1)} .tiles>.tile:nth-child(4n+2){--accent:var(--s3)}
+.tiles>.tile:nth-child(4n+3){--accent:var(--s2)} .tiles>.tile:nth-child(4n+4){--accent:var(--s7)}
+.tile .v{font-size:23px;font-weight:700;letter-spacing:-.02em}
 .tile .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .tile .d{font-size:11.5px;color:var(--ink-2);margin-top:2px}
 table{border-collapse:collapse;width:100%;font-size:13px}
 th{text-align:right;font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;
   letter-spacing:.04em;padding:0 0 6px;border-bottom:1px solid var(--grid)}
 th:first-child,td:first-child{text-align:left}
-td{padding:5px 0;border-bottom:1px solid var(--grid);text-align:right;font-variant-numeric:tabular-nums}
+td{padding:6px 0;border-bottom:1px solid var(--grid);text-align:right;font-variant-numeric:tabular-nums}
+td+td,th+th{padding-left:16px}
 td:first-child{font-weight:550}
 .swatch{width:9px;height:9px;border-radius:2.5px;display:inline-block;margin-right:7px;vertical-align:middle}
 .legend{display:flex;flex-wrap:wrap;gap:5px 14px;margin:2px 0 10px;font-size:12px;color:var(--ink-2)}
@@ -94,18 +121,27 @@ td:first-child{font-weight:550}
 .brow{display:grid;grid-template-columns:44px 58px 1fr;gap:8px;align-items:center;font-size:12px}
 .brow .lab{color:var(--ink-2);font-variant-numeric:tabular-nums}
 .brow .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
-.brow .bar{height:11px;border-radius:0 4px 4px 0;background:var(--seq-mid)}
-.chip{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--ring);
-  font-size:12px;margin:0 5px 5px 0;background:var(--page)}
+.brow .bar{height:12px;border-radius:0 999px 999px 0;background:var(--seq-mid);
+  transition:filter .14s ease}
+.brow:hover .bar{filter:brightness(1.12)}
+.chip{display:inline-block;padding:3px 11px;border-radius:999px;
+  border:1px solid color-mix(in oklab,var(--accent,var(--s1)) 22%,var(--ring));
+  background:color-mix(in oklab,var(--accent,var(--s1)) 9%,var(--surface));
+  font-size:12px;margin:0 5px 6px 0;transition:transform .12s ease}
+.chip:hover{transform:translateY(-1px)}
 .msg{padding:6px 0;border-bottom:1px solid var(--grid)}
 .msg .m-h{font-size:11.5px;color:var(--muted)}
 .msg .m-t{white-space:pre-wrap;word-break:break-word}
 .msg.hit{background:color-mix(in oklab,var(--s4) 16%,transparent);border-radius:6px;padding:6px 8px}
 .ctx{opacity:.62;font-size:12.5px}
-button.act{padding:8px 13px;border-radius:9px;border:1px solid var(--ring);background:var(--surface);
-  cursor:pointer;font-weight:600}
-button.act:hover{background:color-mix(in oklab,var(--s1) 10%,var(--surface))}
+button.act{padding:9px 16px;border-radius:999px;border:1px solid var(--ring);background:var(--surface);
+  cursor:pointer;font-weight:600;box-shadow:var(--lift);
+  transition:transform .14s ease, box-shadow .14s ease, background .14s ease}
+button.act:hover{background:color-mix(in oklab,var(--s1) 10%,var(--surface));transform:translateY(-1px);
+  box-shadow:var(--lift-hi)}
+button.act:active{transform:translateY(0) scale(.97)}
 button.act.primary{background:var(--s1);border-color:var(--s1);color:#fff}
+button.act.primary:hover{background:color-mix(in oklab,var(--s1) 88%,#fff)}
 .row{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
 /* inputs default to width:100%; inside a row they should share the line */
 .row>input,.row>select{width:auto;flex:0 1 auto}
@@ -122,6 +158,16 @@ svg{display:block;max-width:100%;overflow:visible}
   border-radius:8px;padding:7px 10px;font-size:12px;box-shadow:0 6px 22px rgba(0,0,0,.16);
   z-index:9;opacity:0;transition:opacity .1s}
 .scroll{overflow-x:auto}
+.clickrow{cursor:pointer}
+.clickrow:hover td{background:color-mix(in oklab,var(--s1) 8%,transparent)}
+/* The attachment mix is prose, not a number — it should read left to right,
+   and its header has to agree with it. */
+td.mixcell,th.mixcell{text-align:left;font-variant-numeric:normal}
+td.mixcell{color:var(--ink-2)}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms !important;animation-duration:.01ms !important}
+  .card:hover,.tile:hover,.chip:hover,.chat:hover,button.act:hover{transform:none}
+}
 details>summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;padding:5px 0}
 .muted{color:var(--muted)}
 .mono{font-variant-numeric:tabular-nums}
@@ -132,6 +178,10 @@ details>summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;padding:5px 0
   <aside id="side">
     <div class="brand"><b>MessageStats</b><span id="brand-sub">local only</span></div>
     <div class="search-box"><input type="search" id="filter" placeholder="Filter conversations…" autocomplete="off"></div>
+    <button class="chat navlink" id="ovbtn">
+      <div class="t"><span class="n">✨ Everything</span></div>
+      <div class="p">every conversation at once</div>
+    </button>
     <div id="chatlist"></div>
   </aside>
   <main id="main"><p class="muted">Loading…</p></main>
@@ -150,6 +200,7 @@ const N = n=>(n??0).toLocaleString();
 const pct = (a,b)=> b? (a/b*100).toFixed(1)+"%" : "—";
 const D = ms => new Date(ms).toISOString().slice(0,10);
 const DT = ms => new Date(ms).toISOString().slice(0,16).replace("T"," ");
+const SIZE = b=> b>=1e9? (b/1e9).toFixed(1)+" GB" : b>=1e6? Math.round(b/1e6)+" MB" : Math.round(b/1e3)+" KB";
 const dur = ms=>{const s=Math.round(ms/1000); if(s<60)return s+"s"; const m=Math.round(s/60);
   if(m<60)return m+"m"; const h=Math.floor(m/60); if(h<48)return `${h}h ${m%60}m`; return `${Math.floor(h/24)}d ${h%24}h`;};
 const esc = s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
@@ -268,15 +319,34 @@ function areaChart(labels,values,{h=150,fmt=N}={}){
 
 /* ---------- state ---------- */
 let CHATS=[], CUR=null, OPT={merge:false,ids:[]};
+/* Bumped every time #main is rebuilt. Anything that awaits before touching the
+   DOM captures it first and gives up if the page moved on underneath — the
+   overview takes seconds to compute, and a click during that window used to
+   drop it underneath whatever you opened instead. */
+let PAGE=0;
+const newPage=()=>++PAGE;
 
 /* ---------- setup wizard ---------- */
 const MB = b => b==null? "?" : (b/1e6>=1000? (b/1e9).toFixed(2)+" GB" : Math.round(b/1e6)+" MB");
 
-async function renderSetup(st){
-  const m=$("#main"); m.innerHTML="";
-  m.append(el("h1",{},"Let's find your messages"));
-  m.append(el("p",{class:"sub"},"Everything happens on this machine. This page is served from 127.0.0.1 and the project has no network client in it at all."));
-  if(!st.db.found){
+/**
+ * The first-run wizard, and — with {refresh:true} — the way back to it.
+ *
+ * Without a refresh mode this screen is a one-way door: once a database and a
+ * names.json both exist, boot() never routes here again, so there is no way to
+ * re-copy a snapshot that has gone stale or to re-read Contacts after adding
+ * someone. In refresh mode every card is shown regardless of what already
+ * exists, and nothing auto-advances.
+ */
+async function renderSetup(st,{refresh=false}={}){
+  const m=$("#main"); m.innerHTML=""; newPage();
+  m.append(el("h1",{},refresh?"Refresh your data":"Let's find your messages"));
+  m.append(el("p",{class:"sub"},refresh
+    ? "Re-copy the snapshot, or re-read Contacts after adding someone. The old copy is replaced in place — your notes and settings live elsewhere and aren't touched."
+    : "Everything happens on this machine. This page is served from 127.0.0.1 and the project has no network client in it at all."));
+  if(refresh) m.append(el("div",{class:"row",style:"margin-bottom:14px"},
+    el("button",{class:"act",onclick:()=>boot(true)},"← Back to conversations")));
+  if(!st.db.found || refresh){
     const src=await api("/api/source");
     if(src.readable){
       // We can read the live folder, so do the copying for them.
@@ -310,37 +380,42 @@ async function renderSetup(st){
         el("h3",{style:"margin-top:14px"},"Option A — grant Full Disk Access, then I'll do the copying"),
         el("ol",{class:"steps"},
           el("li",{},"System Settings → Privacy & Security → ",el("b",{},"Full Disk Access")),
-          el("li",{},"Add the app you ran ",el("code",{},"node serve.mjs")," from — Terminal, iTerm, or your editor"),
-          el("li",{},el("b",{},"Fully quit that app and reopen it"),
-            el("div",{class:"sub"},"The permission only applies to a freshly launched process.")),
-          el("li",{},"Run ",el("code",{},"node serve.mjs")," again and reload this page")),
-        el("div",{class:"row"},el("button",{class:"act primary",onclick:boot},"I've done that — recheck"))));
+          el("li",{},"Switch on ",el("b",{},"MessageStats"),
+            el("div",{class:"sub"},"If you started the server yourself with ",el("code",{},"node serve.mjs"),", add the terminal app you ran it from instead.")),
+          el("li",{},el("b",{},"Fully quit MessageStats and open it again"),
+            el("div",{class:"sub"},"The permission only applies to a freshly launched process, so a reload isn't enough.")),
+          el("li",{},"Come back to this page")),
+        el("div",{class:"row"},el("button",{class:"act primary",onclick:()=>boot()},"I've done that — recheck"))));
       m.append(manualCard());
     }
-    m.append(el("div",{class:"flag info"},el("div",{},
-      el("b",{},"Why a copy at all? "),
-      "The live database is being written to while Messages runs, so reading it directly gives inconsistent results. A snapshot is also safer: nothing this tool does can ever touch your real history.")));
-    return;
+    if(!refresh){
+      m.append(el("div",{class:"flag info"},el("div",{},
+        el("b",{},"Why a copy at all? "),
+        "The live database is being written to while Messages runs, so reading it directly gives inconsistent results. A snapshot is also safer: nothing this tool does can ever touch your real history.")));
+      return;
+    }
   }
-  m.append(el("div",{class:"card"},
+  if(st.db.found) m.append(el("div",{class:"card"},
     el("h2",{},"Database found"),
     el("p",{class:"sub"},`${st.db.path} · ${N(st.db.sizeMB)} MB${st.db.wal?" · WAL present ✓":" · no -wal file, recent messages may be missing"}`),
     st.db.ageHours!=null? el("p",{class:"sub"},
       `Newest message ${DT(st.db.newest)} — ${st.db.ageHours<24?st.db.ageHours.toFixed(1)+"h old":Math.round(st.db.ageHours/24)+" days old"}`):null));
-  if(!st.names.found || st.names.count===0){
+  if(!st.names.found || st.names.count===0 || refresh){
     m.append(el("div",{class:"card"},
-      el("h2",{},"2. Put names to the numbers"),
-      el("p",{class:"sub"},"chat.db stores phone numbers, not names — those live in Contacts, which this tool reads only when you ask. Without this, every report is a wall of phone numbers."),
+      el("h2",{},refresh?"Re-read Contacts":"2. Put names to the numbers"),
+      el("p",{class:"sub"},refresh
+        ? `${N(st.names.count)} names on file${st.names.unnamedTotal?`, ${N(st.names.unnamedTotal)} handles still unnamed`:""}. Run this again after adding someone to Contacts — existing entries are kept.`
+        : "chat.db stores phone numbers, not names — those live in Contacts, which this tool reads only when you ask. Without this, every report is a wall of phone numbers."),
       el("div",{class:"row"},
         el("button",{class:"act primary",onclick:async ev=>{
           ev.target.disabled=true; ev.target.textContent="Reading Contacts…";
           const r=await fetch("/api/build-names",{method:"POST"}).then(r=>r.json());
           alert(r.output||"done"); boot();
-        }},"Build names from Contacts"),
-        el("button",{class:"act",onclick:boot},"Skip for now"))));
-    return;
+        }},refresh?"Re-read Contacts now":"Build names from Contacts"),
+        refresh?null:el("button",{class:"act",onclick:()=>boot(true)},"Skip for now"))));
+    if(!refresh) return;
   }
-  boot(true);
+  if(!refresh) boot(true);
 }
 
 /* ---------- sidebar ---------- */
@@ -365,6 +440,7 @@ $("#filter").addEventListener("input",e=>{
 /* ---------- chat detail ---------- */
 async function openChat(id,opt){
   if(opt) OPT=opt; else OPT={merge:false,ids:[]};
+  newPage();
   CUR=id;
   for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current",String(+b.dataset.id===id));
   $("#main").innerHTML='<p class="muted">Reading messages…</p>';
@@ -377,7 +453,7 @@ async function openChat(id,opt){
 }
 
 function render(A){
-  const m=$("#main"); m.innerHTML="";
+  const m=$("#main"); m.innerHTML=""; resetCards();
   const P=A.perPerson;
 
   m.append(el("div",{class:"head"},el("h1",{},A.chat.name),
@@ -503,6 +579,75 @@ function render(A){
       el("div",{class:"sub"},p.topWords.map(w=>`${w.word} (${N(w.n)})`).join(", "))))));
   m.append(cw);
 
+  /* words that arrived partway through */
+  if(A.pickedUp){
+    const cp=card("Words they picked up",el("p",{class:"sub"},
+      `Not there at the start, a habit by the end — first used at least a fifth of the way in, then ${A.pickedUp.minUses}+ times. A different question from signature words: this one is about drift.`));
+    for(const s of A.pickedUp.people){
+      const i=P.findIndex(p=>p.who===s.who);
+      cp.append(el("h3",{style:"margin:10px 0 4px"},el("span",{class:"swatch",style:`background:${color(i)}`}),s.who));
+      cp.append(el("div",{},s.words.map(w=>el("span",{class:"chip"},`${w.word} ${w.n}× from ${D(w.at)}`))));
+    }
+    m.append(cp);
+  }
+
+  /* attachments */
+  if(A.attachments && (A.attachments.total || A.attachments.linkCards)){
+    const ca=card("Attachments",null,
+      A.attachments.total? `${N(A.attachments.total)} files, ${SIZE(A.attachments.bytes)} in total.` : null);
+    if(A.attachments.total){
+      const at=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"files"),
+        el("th",{},"size"),el("th",{class:"mixcell"},"what"))));
+      const atb=el("tbody",{});
+      P.forEach((p,i)=>{ if(!p.attachments) return; atb.append(el("tr",{},
+        el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+        el("td",{},N(p.attachments)),el("td",{},SIZE(p.attachmentBytes)),
+        el("td",{class:"mixcell"},p.attachmentKinds.map(k=>`${k.kind} ${k.n}`).join(", ")))); });
+      at.append(atb);
+      ca.append(el("div",{class:"scroll"},at));
+      const yrs=Object.entries(A.attachments.byYear);
+      if(yrs.length>1){
+        ca.append(el("h3",{style:"margin:14px 0 6px"},"Files per year"));
+        ca.append(barRows(yrs.map(([y,n])=>({k:y,v:n}))));
+      }
+    }
+    // The single biggest artifact in this whole report — see analyze.mjs.
+    if(A.attachments.linkCards) ca.append(el("div",{class:"flag info"},el("div",{},
+      el("b",{},`Plus ${N(A.attachments.linkCards)} link preview cards. `),
+      "iMessage builds those automatically whenever someone pastes a URL, so they are left out of every number above. Counted as files, whoever shares the most articles would look like the biggest photographer.")));
+    m.append(ca);
+  }
+
+  /* unsent + edited */
+  if(A.edits){
+    const et=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"unsent"),el("th",{},"edited"))));
+    const etb=el("tbody",{});
+    P.forEach((p,i)=>{ if(!p.unsent&&!p.edited) return; etb.append(el("tr",{},
+      el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+      el("td",{},N(p.unsent)),el("td",{},N(p.edited)))); });
+    et.append(etb);
+    const ce2=card("Second thoughts",el("div",{class:"scroll"},et),
+      "Messages taken back or rewritten after sending.");
+    if(!A.edits.unsent) ce2.append(el("p",{class:"sub"},
+      "No unsent messages recorded here. macOS only started keeping them in Ventura, and an unsend from before then left nothing behind."));
+    m.append(ce2);
+  }
+
+  /* read receipts */
+  if(A.read){
+    const side=(s,label)=>el("div",{class:"tile"},
+      el("div",{class:"v"},s? (s.medianMs==null? "—" : dur(s.medianMs)) : "—"),
+      el("div",{class:"k"},label),
+      el("div",{class:"d"}, !s? "no data"
+        : s.medianMs==null? `only ${N(s.n)} sample${s.n===1?"":"s"}` : `${N(s.n)} messages`));
+    const cr=card("Read receipts",el("div",{class:"tiles"},
+      side(A.read.byThem,"they read yours in"), side(A.read.byMe,"you read theirs in")),
+      `Covers ${(A.read.coverage*100).toFixed(0)}% of this conversation.`);
+    cr.append(el("p",{class:"sub"},
+      "Only counts messages where the reader had read receipts switched on. A dash on one side almost always means that person keeps them off, not that they never read anything."));
+    m.append(cr);
+  }
+
   /* emoji + odds */
   if(A.emoji.overall.length){
     const ce=card("Emoji",el("div",{style:"font-size:19px"},A.emoji.overall.map(e=>
@@ -534,12 +679,12 @@ function render(A){
 }
 
 /* ---------- assistant ---------- */
+// Three, not five. These are examples of the kind of thing worth asking, not a
+// menu — a long list reads like features and stops people typing their own.
 const SUGGESTED = [
-  "What are the three most surprising things here?",
-  "Who wins arguments, and how can you tell?",
-  "What changed most between the first year and the last?",
-  "Which of these numbers are artifacts I shouldn't trust?",
-  "Roast this group based on the data.",
+  "What's the weirdest thing in here?",
+  "How have we changed since we started talking?",
+  "Which of these numbers shouldn't I trust?",
 ];
 
 /**
@@ -657,14 +802,24 @@ const manualCard=()=>el("div",{class:"card"},
     el("li",{},el("b",{},"Quit Messages"),
       el("div",{class:"sub"},"⌘Q, not just closing the window. Otherwise the newest messages sit unflushed in the write-ahead log and are silently missing.")),
     el("li",{},"In Finder press ⇧⌘G and go to ",el("code",{},"~/Library/Messages")),
-    el("li",{},"Copy ",el("b",{},"all three")," files next to ",el("code",{},"serve.mjs"),":",
+    el("li",{},"Copy ",el("b",{},"all three")," files into ",
+      el("code",{},"~/Library/Application Support/MessageStats/"),":",
       el("div",{class:"sub"},el("code",{},"chat.db"),"  ",el("code",{},"chat.db-wal"),"  ",el("code",{},"chat.db-shm"),
         el("div",{},"chat.db on its own opens fine and quietly omits your most recent history."))),
     el("li",{},"Come back and reload.")),
-  el("div",{class:"row"},el("button",{class:"act primary",onclick:boot},"I've copied them — reload")));
+  el("div",{class:"row"},el("button",{class:"act primary",onclick:()=>boot()},"I've copied them — reload")));
 
 const tile=(v,k,d)=>el("div",{class:"tile"},el("div",{class:"v"},v),el("div",{class:"k"},k),d?el("div",{class:"d"},d):null);
-const card=(title,body,sub)=>el("div",{class:"card"},el("h2",{},title),sub?el("p",{class:"sub"},sub):null,body);
+/* Cards cycle through the palette so a long report reads as distinct sections.
+   Reset by resetCards() whenever a page is rebuilt, so colours stay stable
+   rather than drifting each time you open a conversation. */
+const CARD_ACCENTS=["--s1","--s3","--s2","--s7","--s5"];
+let CARD_I=0;
+const resetCards=()=>{CARD_I=0;};
+const card=(title,body,sub)=>{
+  const c=el("div",{class:"card"},el("h2",{},title),sub?el("p",{class:"sub"},sub):null,body);
+  c.style.setProperty("--accent",`var(${CARD_ACCENTS[CARD_I++%CARD_ACCENTS.length]})`);
+  return c;};
 const legend=items=>el("div",{class:"legend"},items.map(({name,i})=>
   el("span",{},el("span",{class:"swatch",style:`background:${color(i)}`}),name)));
 
@@ -716,17 +871,115 @@ function searchPanel(A){
 const msgEl=(m,cls)=>el("div",{class:"msg "+(cls||"")},
   el("div",{class:"m-h"},`${m.who} · ${DT(m.ms)}`),el("div",{class:"m-t"},m.text));
 
+/* ---------- overview: the whole library at once ---------- */
+
+/**
+ * Appended asynchronously rather than awaited, because it scans every message
+ * row and takes a couple of seconds the first time. The landing page and its
+ * warnings render immediately; this drops in underneath when it's ready.
+ */
+async function renderOverview(mount,gen){
+  const box=el("div",{});
+  mount.append(box);
+  box.append(el("p",{class:"muted"},"Adding up every conversation…"));
+  let O;
+  try{ O=await api("/api/overview"); }
+  catch(e){
+    if(gen===PAGE) box.replaceChildren(el("p",{class:"muted"},"Couldn't build the overview: "+esc(e.message)));
+    return;
+  }
+  if(gen!==PAGE){ box.remove(); return; }   // they opened something else meanwhile
+  if(!O){ box.remove(); return; }
+  box.replaceChildren();
+
+  box.append(el("h2",{style:"margin-top:18px"},"Everything, all at once"));
+  box.append(el("div",{class:"tiles"},
+    tile(N(O.total),"messages ever",`${N(O.sent)} sent · ${N(O.received)} received`),
+    tile(N(O.chats),"conversations",`since ${D(O.first)}`),
+    tile(N(O.activeDays),"days with a message",
+      O.activeDays>=O.spanDays? "every single day" : `out of ${N(O.spanDays)}`),
+    tile(O.perDay.toFixed(0),"a day, average",
+      O.busiestDay?`busiest was ${O.busiestDay.day} — ${N(O.busiestDay.n)}`:null)));
+
+  const yrs=Object.keys(O.byYear);
+  if(yrs.length>1){
+    const c=card("Sent and received, by year",lineChart(yrs,[
+      {name:"received",values:yrs.map(y=>O.byYear[y].received)},
+      {name:"sent",values:yrs.map(y=>O.byYear[y].sent)}],{yLabel:"messages per year"}),
+      "The gap between the two lines is how much more you get than you send.");
+    c.append(legend([{name:"received",i:0},{name:"sent",i:1}]));
+    box.append(c);
+  }
+
+  const peopleTable=(rows,cols)=>{
+    const t=el("table",{},el("thead",{},el("tr",{},...cols.map(c=>el("th",{},c)))));
+    t.append(el("tbody",{},...rows));
+    return el("div",{class:"scroll"},t);
+  };
+
+  if(O.people.length){
+    const rows=O.people.map(p=>{
+      const tr=el("tr",{class:"clickrow"},
+        el("td",{},p.name),el("td",{},N(p.n)),el("td",{},N(p.sent)),el("td",{},N(p.received)),
+        el("td",{},D(p.first)),el("td",{},D(p.last)));
+      if(p.chats.length) tr.addEventListener("click",()=>openChat(p.chats[0],{merge:true,ids:[]}));
+      return tr;
+    });
+    box.append(card("The people you actually message",
+      peopleTable(rows,["person","messages","you sent","they sent","first","latest"]),
+      "One-to-one only, folded across split threads — an old SMS thread and a newer iMessage one count once, together. Click a row to open it."));
+  }
+
+  if(O.groups.length){
+    const rows=O.groups.map(g=>{
+      const tr=el("tr",{class:"clickrow"},
+        el("td",{},g.name),el("td",{},N(g.n)),el("td",{},N(g.people.length)),
+        el("td",{},D(g.first)),el("td",{},D(g.last)));
+      tr.addEventListener("click",()=>openChat(g.id,{merge:true,ids:[]}));
+      return tr;
+    });
+    box.append(card("Groups",peopleTable(rows,["group","messages","people","first","latest"]),
+      "Click a row to open it."));
+  }
+
+  if(O.fading.length){
+    const rows=O.fading.map(f=>el("tr",{},
+      el("td",{},f.name),el("td",{},N(f.prior)),el("td",{},N(f.recent)),
+      el("td",{style:`color:${f.change<-0.5?"var(--crit)":"inherit"}`},
+        (f.change*100).toFixed(0)+"%")));
+    box.append(card("Drifting apart",
+      peopleTable(rows,["person","12–24 months ago","last 12 months","change"]),
+      "Two equal twelve-month windows, so a partial current year can't make everyone look like they're fading."));
+  }
+
+  if(O.drifted.length){
+    box.append(card("Gone quiet",
+      el("div",{},O.drifted.map(d=>el("span",{class:"chip"},
+        `${d.name} · ${N(d.n)} messages · silent ${Math.round(d.quietDays/30)} months`))),
+      "Conversations with real history behind them and nothing for six months or more."));
+  }
+}
+
 /* ---------- boot ---------- */
 async function boot(skipSetup){
   const st=await api("/api/status");
-  $("#brand-sub").textContent = st.db.ageHours!=null
+  // The age in the header is the only place staleness surfaces, so it is also
+  // the way back to the setup screen — otherwise it reports a problem the UI
+  // gives you no way to act on.
+  const sub=$("#brand-sub");
+  sub.textContent = st.db.ageHours!=null
     ? (st.db.ageHours<24? st.db.ageHours.toFixed(0)+"h old" : Math.round(st.db.ageHours/24)+"d old") : "local only";
+  sub.title = "Re-copy the snapshot or re-read Contacts";
+  sub.onclick = () => renderSetup(st,{refresh:true});
   if(!st.ready || (!skipSetup && (!st.names.found || st.names.count===0))) return renderSetup(st);
   CHATS=await api("/api/chats?min=200");
   renderChats(CHATS);
-  const m=$("#main"); m.innerHTML="";
-  m.append(el("h1",{},"Pick a conversation"));
-  m.append(el("p",{class:"sub"},`${N(CHATS.length)} conversations with 200+ messages. Everything runs locally; nothing is uploaded.`));
+  const m=$("#main"); m.innerHTML=""; resetCards();
+  const gen=newPage();
+  CUR=null;
+  for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current","false");
+  m.append(el("h1",{},"Your messages"));
+  m.append(el("p",{class:"sub"},`${N(CHATS.length)} conversations with 200+ messages in the sidebar. Everything runs locally; nothing is uploaded.`));
   const split=CHATS.filter(c=>c.siblings.length), churn=CHATS.filter(c=>!c.siblings.length&&c.named.length);
   if(split.length) m.append(el("div",{class:"flag warn"},el("div",{},
     el("b",{},`${split.length} conversations are split across several chat rows. `),
@@ -741,7 +994,10 @@ async function boot(skipSetup){
       "They'll show up as phone numbers: ",big.slice(0,4).map(u=>`${u.handle} (${N(u.n)})`).join(", "),
       ". Add them to names.json by hand — if one of them is someone you know under another number, add an alias instead or they'll be counted as two people.")));
   }
+  renderOverview(m,gen);
 }
+
+$("#ovbtn").addEventListener("click",()=>boot(true));
 boot();
 </script>
 </body>

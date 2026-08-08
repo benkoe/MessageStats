@@ -32,7 +32,12 @@ const STOP = new Set(
    "should so some still such sure take than that thats the their them then there theres these they " +
    "theyre thing think this those thought through to too two up us ve very want was wasnt watch way " +
    "we well were what when where which who why will with would ya yea yeah yep yes yet you youre your " +
-   "u ur im gonna wanna went being im dont doesnt wasnt arent couldnt wouldnt shouldnt let lets").split(/\s+/)
+   "u ur im gonna wanna went being im dont doesnt wasnt arent couldnt wouldnt shouldnt let lets " +
+   // The tokenizer strips edge apostrophes, so "wasn't" arrives as "wasn" and
+   // never matches "wasnt" above. Without these the contraction stumps rank as
+   // real vocabulary — "wasn" was showing up as a word someone picked up.
+   "wasn isn aren doesn didn couldn wouldn shouldn don hasn haven hadn won ain weren mustn " +
+   "ll re ve").split(/\s+/)
 );
 
 const EMOJI_RE = /(\p{Extended_Pictographic}(\p{Emoji_Modifier}|️)?(‍\p{Extended_Pictographic}(\p{Emoji_Modifier}|️)?)*)/gu;
@@ -41,6 +46,51 @@ const LAUGH = /(\blol\b|\blmao\b|\blmfao\b|\bhaha+\b|\bhehe+\b|\bheh\b|😂|🤣
 const inc = (map, key, by = 1) => map.set(key, (map.get(key) ?? 0) + by);
 const topN = (map, n) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
 const obj = (map) => Object.fromEntries(map);
+
+/**
+ * Columns come and go between macOS releases — date_edited and date_retracted
+ * only exist from Ventura, when unsend and edit shipped. Ask before selecting
+ * them, or the whole report dies on an older copy with "no such column".
+ */
+/** Below this many read receipts, report the count but not a median. */
+export const MIN_READ_SAMPLE = 20;
+const readSide = (xs) =>
+  xs.length ? { n: xs.length, medianMs: xs.length >= MIN_READ_SAMPLE ? median(xs) : null } : null;
+
+const hasColumns = (db, table, ...cols) => {
+  try {
+    const have = new Set(db.prepare(`select name from pragma_table_info(?)`).all(table).map((r) => r.name));
+    return cols.every((c) => have.has(c));
+  } catch { return false; }
+};
+
+/**
+ * What an attachment actually is.
+ *
+ * The largest category in a real library is not photos: it's
+ * `.pluginPayloadAttachment`, the rich card iMessage builds for a link or an
+ * Apple Music track. One 500k-message corpus had 37,573 of them at ~150 KB
+ * each. Counted as "things people sent", they make whoever pastes the most
+ * links look like a prolific photographer — so they're tracked separately and
+ * kept out of the media totals.
+ */
+const attachmentKind = (mime, uti, name, isSticker) => {
+  if (isSticker) return "sticker";
+  if (/pluginPayloadAttachment$/i.test(name ?? "")) return "link card";
+  if (!mime) {
+    if (/coreaudio|audio/i.test(uti ?? "")) return "audio";
+    if (/vcard/i.test(uti ?? "")) return "contact";
+    return "other";
+  }
+  if (mime === "image/gif") return "gif";
+  if (mime.startsWith("image/")) return "photo";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime === "application/pdf") return "pdf";
+  if (/vcard/i.test(mime)) return "contact";
+  if (/vlocation/i.test(mime)) return "location";
+  return "other";
+};
 
 /**
  * Work out which chat rows to read before reading any of them.
@@ -130,6 +180,185 @@ export function resolveMe(db, ids, { names, canonical }) {
     )
     .get(...ids);
   return names.get(canonical(normalizeHandle(row?.caller ?? ""))) ?? "Me";
+}
+
+/**
+ * Everything at once, rather than one conversation.
+ *
+ * Reads no message text — only ids, dates and directions. That keeps it quick
+ * enough to run across a whole library on demand, and means the overview can be
+ * browsed without opening a single one of anyone's messages, the same property
+ * list-chats.mjs is careful to preserve.
+ *
+ * One-to-one chats are grouped by who is on the other end rather than by chat
+ * row, so a person whose history is split across a recreated thread and an SMS
+ * fork counts once, with all of it.
+ */
+export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
+  // Grouped in SQL, not in JS. Pulling all 700k rows across and counting them
+  // here took three seconds, which is too long for the page you land on;
+  // letting SQLite do it returns a few thousand rows instead.
+  //
+  // Integer arithmetic stays inside SQLite, so the nanosecond dates never
+  // become JavaScript numbers and never overflow MAX_SAFE_INTEGER.
+  const APPLE_EPOCH = 978_307_200;               // 2001-01-01 in unix seconds
+  const SECONDS = `(m.date / 1000000000 + ${APPLE_EPOCH})`;
+  // UTC, with no 'localtime' argument, because day() in lib.mjs is
+  // toISOString().slice(0,10) and every other date bucket in this file follows
+  // it. Using local time here shifted the busiest day's count by 200 messages.
+  const utcFmt = (f) => `strftime('${f}', ${SECONDS}, 'unixepoch')`;
+
+  // One scan, grouped by day and direction; the year comes from the day string.
+  // count(distinct) because chat_message_join can file one message against two
+  // chats — only 26 times in a 700k-message library, but a total is a total.
+  const dayRows = db.prepare(
+    `select ${utcFmt("%Y-%m-%d")} d, m.is_from_me fromMe, count(distinct m.ROWID) n
+       from message m
+       join chat_message_join j on j.message_id = m.ROWID
+      where ${REAL_MESSAGE_WHERE}
+      group by d, fromMe`
+  ).all();
+
+  // By month, not by year: comparing "this year so far" against "all of last
+  // year" makes everyone look like they're fading, because the current year is
+  // always partial. Months let the windows below be a fair 12 against 12.
+  const chatRows = db.prepare(
+    `select j.chat_id cid, ${utcFmt("%Y-%m")} ym, m.is_from_me fromMe, count(*) n,
+            min(${DATE_TO_MICROS.replace("date", "m.date")}) first_us,
+            max(${DATE_TO_MICROS.replace("date", "m.date")}) last_us
+       from message m
+       join chat_message_join j on j.message_id = m.ROWID
+      where ${REAL_MESSAGE_WHERE}
+      group by cid, ym, fromMe`
+  ).all();
+
+  const meta = new Map(
+    db.prepare(`select ROWID id, display_name dn, chat_identifier ci, style from chat`)
+      .all().map((c) => [c.id, c])
+  );
+  const rosters = chatRosters(db, canonical);
+
+  const byYear = new Map(), byDay = new Map();
+  let total = 0, sent = 0, received = 0;
+  for (const r of dayRows) {
+    if (!r.d) continue;
+    const y = Number(r.d.slice(0, 4));
+    inc(byDay, r.d, r.n);
+    if (!byYear.has(y)) byYear.set(y, { sent: 0, received: 0 });
+    byYear.get(y)[r.fromMe === 1 ? "sent" : "received"] += r.n;
+    total += r.n;
+    if (r.fromMe === 1) sent += r.n; else received += r.n;
+  }
+
+  const perChat = new Map();
+  let firstMs = Infinity, lastMs = 0;
+  for (const r of chatRows) {
+    const f = appleMicrosToMs(r.first_us), l = appleMicrosToMs(r.last_us);
+    if (!f || !l || !r.ym) continue;
+    let c = perChat.get(r.cid);
+    if (!c) {
+      c = { n: 0, sent: 0, received: 0, first: f, last: l, years: new Map(), months: new Map() };
+      perChat.set(r.cid, c);
+    }
+    c.n += r.n;
+    if (r.fromMe === 1) c.sent += r.n; else c.received += r.n;
+    if (f < c.first) c.first = f;
+    if (l > c.last) c.last = l;
+    inc(c.years, Number(r.ym.slice(0, 4)), r.n);
+    inc(c.months, r.ym, r.n);
+    if (f < firstMs) firstMs = f;
+    if (l > lastMs) lastMs = l;
+  }
+
+  if (!total) return null;
+
+  const YEAR = 365 * 86_400_000;
+  const nameOfHandle = (h) => names.get(h) ?? h;
+
+  // Fold 1:1 chats together by counterpart; keep groups as themselves.
+  const byPerson = new Map(), groups = [];
+  for (const [cid, c] of perChat) {
+    const m = meta.get(cid);
+    if (!m) continue;
+    const roster = [...(rosters.get(cid) ?? [])];
+    if (m.style === 43 || roster.length > 1) {
+      groups.push({
+        id: cid,
+        // Unnamed groups have a chat_identifier like "chat1343308266254744",
+        // which tells you nothing. Who's in it does.
+        name: m.dn?.trim() || roster.map(nameOfHandle).sort().join(", ") || m.ci || `chat ${cid}`,
+        n: c.n, sent: c.sent, received: c.received, first: c.first, last: c.last,
+        people: roster.map(nameOfHandle).sort(),
+      });
+      continue;
+    }
+    const key = roster[0] ?? canonical(normalizeHandle(m.ci ?? "")) ?? `chat ${cid}`;
+    let p = byPerson.get(key);
+    if (!p) {
+      p = { name: nameOfHandle(key), handle: key, n: 0, sent: 0, received: 0,
+            first: c.first, last: c.last, chats: [], years: new Map(), months: new Map() };
+      byPerson.set(key, p);
+    }
+    p.n += c.n; p.sent += c.sent; p.received += c.received;
+    p.first = Math.min(p.first, c.first);
+    p.last = Math.max(p.last, c.last);
+    p.chats.push(cid);
+    for (const [y, n] of c.years) inc(p.years, y, n);
+    for (const [ym, n] of c.months) inc(p.months, ym, n);
+  }
+
+  const people = [...byPerson.values()].sort((a, b) => b.n - a.n);
+  const shape = (p) => ({
+    name: p.name, n: p.n, sent: p.sent, received: p.received,
+    first: p.first, last: p.last,
+    // Biggest thread first, so a caller opening chats[0] lands on the main one
+    // rather than whichever fork happened to be iterated first.
+    chats: [...p.chats].sort((a, b) => (perChat.get(b)?.n ?? 0) - (perChat.get(a)?.n ?? 0)),
+    byYear: obj(p.years),
+  });
+
+  // Then versus now, over two equal 12-month windows, so "we don't talk any
+  // more" becomes measurable rather than a feeling.
+  const monthKey = (ms) => new Date(ms).toISOString().slice(0, 7);
+  const cutRecent = monthKey(now - YEAR), cutPrior = monthKey(now - 2 * YEAR);
+  const recentOf = (p) => {
+    let recent = 0, prior = 0;
+    for (const [ym, n] of p.months) {
+      if (ym > cutRecent) recent += n;
+      else if (ym > cutPrior) prior += n;
+    }
+    return { recent, prior };
+  };
+
+  const drifted = people
+    .filter((p) => p.n >= 200 && now - p.last > 180 * 86_400_000)
+    .slice(0, top)
+    .map((p) => ({ name: p.name, n: p.n, last: p.last, quietDays: Math.round((now - p.last) / 86_400_000) }));
+
+  const fading = people
+    .slice(0, 40)
+    .map((p) => ({ p, ...recentOf(p) }))
+    .filter((x) => x.prior >= 100)
+    .map((x) => ({ name: x.p.name, recent: x.recent, prior: x.prior, change: (x.recent - x.prior) / x.prior }))
+    .sort((a, b) => a.change - b.change)
+    .slice(0, 8);
+
+  const busiest = topN(byDay, 1)[0];
+  const spanDays = Math.floor((lastMs - firstMs) / 86_400_000) + 1;
+
+  return {
+    total, sent, received,
+    first: firstMs, last: lastMs, spanDays,
+    perDay: total / spanDays,
+    activeDays: byDay.size,
+    chats: perChat.size,
+    byYear: Object.fromEntries([...byYear.entries()].sort((a, b) => a[0] - b[0])),
+    busiestDay: busiest ? { day: busiest[0], n: busiest[1] } : null,
+    people: people.slice(0, top).map(shape),
+    groups: groups.sort((a, b) => b.n - a.n).slice(0, top),
+    drifted,
+    fading,
+  };
 }
 
 /**
@@ -267,15 +496,110 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     if (hit) { inc(received, hit.who); inc(perMsg, target); }
   }
 
+  /* ---- attachments ---- */
+  const attRows = hasColumns(db, "attachment", "mime_type", "uti", "total_bytes", "is_sticker", "transfer_name")
+    ? db.prepare(
+        `select distinct a.ROWID aid, a.mime_type mime, a.uti uti, a.transfer_name name,
+                a.total_bytes bytes, a.is_sticker sticker,
+                m.is_from_me fromMe, h.id handle,
+                ${DATE_TO_MICROS.replace("date", "m.date")} us
+           from attachment a
+           join message_attachment_join maj on maj.attachment_id = a.ROWID
+           join message m on m.ROWID = maj.message_id
+           join chat_message_join j on j.message_id = m.ROWID
+           left join handle h on h.ROWID = m.handle_id
+          where j.chat_id in (${holes})`
+      ).all(...ids)
+    : [];
+
+  const attBy = new Map(), attBytesBy = new Map(), attKinds = new Map(), attByYear = new Map();
+  const attKindBy = new Map();
+  const seenAtt = new Set();
+  let attMedia = 0, attBytes = 0, attCards = 0;
+  for (const a of attRows) {
+    if (seenAtt.has(a.aid)) continue;
+    seenAtt.add(a.aid);
+    const kind = attachmentKind(a.mime, a.uti, a.name, a.sticker === 1);
+    inc(attKinds, kind);
+    if (kind === "link card") { attCards += 1; continue; }
+    const who = label(a.handle, a.fromMe === 1);
+    attMedia += 1;
+    attBytes += a.bytes ?? 0;
+    inc(attBy, who);
+    inc(attBytesBy, who, a.bytes ?? 0);
+    if (!attKindBy.has(who)) attKindBy.set(who, new Map());
+    inc(attKindBy.get(who), kind);
+    const ms = appleMicrosToMs(a.us);
+    if (ms) inc(attByYear, new Date(ms).getFullYear());
+  }
+
+  /* ---- unsent + edited ---- */
+  // case-when rather than selecting the timestamps: these are nanosecond
+  // columns too, and reading one raw overflows Number.MAX_SAFE_INTEGER.
+  const editRows = hasColumns(db, "message", "date_retracted", "date_edited")
+    ? db.prepare(
+        `select distinct m.guid guid, m.is_from_me fromMe, h.id handle,
+                case when m.date_retracted != 0 then 1 else 0 end unsent,
+                case when m.date_edited != 0 then 1 else 0 end edited
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+           left join handle h on h.ROWID = m.handle_id
+          where j.chat_id in (${holes})
+            and (m.date_retracted != 0 or m.date_edited != 0)`
+      ).all(...ids)
+    : [];
+
+  const unsentBy = new Map(), editedBy = new Map();
+  const seenEdit = new Set();
+  let unsentTotal = 0, editedTotal = 0;
+  for (const e of editRows) {
+    if (seenEdit.has(e.guid)) continue;
+    seenEdit.add(e.guid);
+    const who = label(e.handle, e.fromMe === 1);
+    if (e.unsent) { inc(unsentBy, who); unsentTotal += 1; }
+    if (e.edited) { inc(editedBy, who); editedTotal += 1; }
+  }
+
+  /* ---- read receipts ---- */
+  // date_read is only populated when the reader has read receipts switched on,
+  // so this is always partial and sometimes absent entirely. On an outgoing
+  // message it's when they read yours; on an incoming one, when you read theirs.
+  const readRows = hasColumns(db, "message", "date_read")
+    ? db.prepare(
+        `select distinct m.guid guid, m.is_from_me fromMe,
+                ${DATE_TO_MICROS.replace("date", "m.date")} sent,
+                ${DATE_TO_MICROS.replace("date", "m.date_read")} seen
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+          where j.chat_id in (${holes}) and ${REAL_MESSAGE_WHERE} and m.date_read != 0`
+      ).all(...ids)
+    : [];
+
+  const readByMe = [], readByThem = [];
+  const seenRead = new Set();
+  for (const r of readRows) {
+    if (seenRead.has(r.guid)) continue;
+    seenRead.add(r.guid);
+    const sentMs = appleMicrosToMs(r.sent), seenMs = appleMicrosToMs(r.seen);
+    if (!sentMs || !seenMs) continue;
+    const dt = seenMs - sentMs;
+    if (dt < 0) continue;   // clock skew across devices
+    (r.fromMe === 1 ? readByThem : readByMe).push(dt);
+  }
+
   /* ---- words + emoji ---- */
-  const wordsBy = new Map(), totalWordsBy = new Map();
+  const wordsBy = new Map(), totalWordsBy = new Map(), firstUse = new Map();
   const emojiBy = new Map(), emojiAll = new Map();
   for (const m of msgs) {
-    if (!wordsBy.has(m.who)) { wordsBy.set(m.who, new Map()); emojiBy.set(m.who, new Map()); totalWordsBy.set(m.who, 0); }
+    if (!wordsBy.has(m.who)) {
+      wordsBy.set(m.who, new Map()); emojiBy.set(m.who, new Map());
+      totalWordsBy.set(m.who, 0); firstUse.set(m.who, new Map());
+    }
     for (const raw of m.text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []) {
       const w = raw.replace(/^'+|'+$/g, "");
       if (w.length < 3 || STOP.has(w)) continue;
       inc(wordsBy.get(m.who), w);
+      if (!firstUse.get(m.who).has(w)) firstUse.get(m.who).set(w, m.ms);
       totalWordsBy.set(m.who, totalWordsBy.get(m.who) + 1);
     }
     for (const e of m.text.match(EMOJI_RE) ?? []) { inc(emojiBy.get(m.who), e); inc(emojiAll, e); }
@@ -308,6 +632,28 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     return { who, words: scored.slice(0, 8) };
   }).filter((s) => s.words.length);
 
+  /**
+   * WORDS THEY PICKED UP. A different question from signature words: not what
+   * marks someone out from everyone else, but what entered their vocabulary
+   * partway through and stuck. Requires a first use at least a fifth of the way
+   * into the history — anything earlier was always there — and enough uses
+   * afterwards that it became a habit rather than a one-off.
+   */
+  const spanMs = last.ms - first.ms || 1;
+  const pickedUp = ranked.map(([who]) => {
+    const words = [];
+    for (const [w, n] of wordsBy.get(who)) {
+      if (n < minUses) continue;
+      const at = firstUse.get(who).get(w);
+      const into = (at - first.ms) / spanMs;
+      if (into < 0.2) continue;
+      words.push({ word: w, n, at, into });
+    }
+    // Latest arrivals that still caught on: rank by uses, break ties by lateness.
+    words.sort((a, b) => b.n - a.n || b.into - a.into);
+    return { who, words: words.slice(0, 6) };
+  }).filter((s) => s.words.length);
+
   /* ---- odds and ends ---- */
   const laughs = new Map(), questions = new Map(), shouts = new Map();
   const links = new Map(), domains = new Map(), vocab = new Map(), exact = new Map();
@@ -333,7 +679,12 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   return {
     chat: {
       id: chat.id,
-      name: chat.display_name?.trim() || chat.chat_identifier || `chat ${chat.id}`,
+      // A one-to-one chat has no display_name, and chat_identifier is a raw
+      // phone number — so picking a named person in the sidebar used to open a
+      // report titled with their number. Fall back to whoever is in it instead.
+      name: chat.display_name?.trim()
+        || people.filter((p) => p !== label(null, true)).join(", ")
+        || chat.chat_identifier || `chat ${chat.id}`,
       isGroup: chat.style === 43,
       ids,
     },
@@ -361,6 +712,11 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       shouts: shouts.get(who) ?? 0,
       links: links.get(who) ?? 0,
       vocab: vocab.get(who)?.size ?? 0,
+      attachments: attBy.get(who) ?? 0,
+      attachmentBytes: attBytesBy.get(who) ?? 0,
+      attachmentKinds: topN(attKindBy.get(who) ?? new Map(), 6).map(([kind, n]) => ({ kind, n })),
+      unsent: unsentBy.get(who) ?? 0,
+      edited: editedBy.get(who) ?? 0,
       topWords: topN(wordsBy.get(who), top).map(([word, n]) => ({ word, n })),
       topEmoji: topN(emojiBy.get(who), 8).map(([emoji, n]) => ({ emoji, n })),
     })),
@@ -393,6 +749,27 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
         .filter((x) => x.msg),
     },
     signature: { minUses, people: signature },
+    pickedUp: pickedUp.length ? { minUses, people: pickedUp } : null,
+    attachments: attMedia === 0 && attCards === 0 ? null : {
+      total: attMedia,
+      bytes: attBytes,
+      // Kept apart from the media count on purpose — see attachmentKind().
+      linkCards: attCards,
+      kinds: topN(attKinds, 9).map(([kind, n]) => ({ kind, n })),
+      byYear: obj(attByYear),
+    },
+    edits: unsentTotal === 0 && editedTotal === 0 ? null : {
+      unsent: unsentTotal,
+      edited: editedTotal,
+    },
+    // medianMs is null below MIN_READ_SAMPLE. Read receipts are off far more
+    // often than they're on, and one real corpus had 27,164 samples in one
+    // direction and 7 in the other — a median of 7 is a number, not a fact.
+    read: readByMe.length + readByThem.length === 0 ? null : {
+      byMe: readSide(readByMe),
+      byThem: readSide(readByThem),
+      coverage: (readByMe.length + readByThem.length) / total,
+    },
     emoji: { overall: topN(emojiAll, 14).map(([emoji, n]) => ({ emoji, n })) },
     odds: {
       domains: topN(domains, 8).map(([domain, n]) => ({ domain, n })),
