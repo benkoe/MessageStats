@@ -79,7 +79,7 @@ OPEN_UI=1
 [ -n "${MESSAGESTATS_NO_OPEN:-}" ] && OPEN_UI=0
 
 # If it's already running, stand down rather than fight for the port.
-if curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/api/status" 2>/dev/null; then
+if curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/api/ping" 2>/dev/null; then
   if [ "$OPEN_UI" = 1 ]; then
     open "http://127.0.0.1:$PORT/"
     echo "MessageStats was already running — opened it in your browser."
@@ -95,7 +95,7 @@ SERVER=$!
 trap 'kill $SERVER 2>/dev/null' EXIT INT TERM
 
 for _ in $(seq 1 40); do
-  curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/api/status" 2>/dev/null && break
+  curl -s -o /dev/null -m 1 "http://127.0.0.1:$PORT/api/ping" 2>/dev/null && break
   sleep 0.25
 done
 [ "$OPEN_UI" = 1 ] && open "http://127.0.0.1:$PORT/"

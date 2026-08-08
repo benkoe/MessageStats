@@ -93,21 +93,28 @@ function status() {
   out.db.ageHours = newestMs ? (Date.now() - newestMs) / 3.6e6 : null;
 
   // Busiest senders with no name yet — the thing that most degrades a report.
-  const { names, canonical } = identities();
-  const unnamed = new Map();
-  for (const r of d.prepare(
-    `select h.id hid, count(*) n from message m
-       join chat_message_join j on j.message_id = m.ROWID
-       join handle h on h.ROWID = m.handle_id
-      where ${REAL_MESSAGE_WHERE} group by h.id`
-  ).all()) {
-    if (names.get(canonical(normalizeHandle(r.hid)))) continue;
-    unnamed.set(r.hid, (unnamed.get(r.hid) ?? 0) + r.n);
+  // Cached: this groups every message row by handle, which is seconds on a large
+  // library, and /api/status is hit repeatedly while the app starts up.
+  if (!cache.has("unnamed")) {
+    const { names, canonical } = identities();
+    const unnamed = new Map();
+    for (const r of d.prepare(
+      `select h.id hid, count(*) n from message m
+         join chat_message_join j on j.message_id = m.ROWID
+         join handle h on h.ROWID = m.handle_id
+        where ${REAL_MESSAGE_WHERE} group by h.id`
+    ).all()) {
+      if (names.get(canonical(normalizeHandle(r.hid)))) continue;
+      unnamed.set(r.hid, (unnamed.get(r.hid) ?? 0) + r.n);
+    }
+    cache.set("unnamed", {
+      list: [...unnamed.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20)
+        .map(([handle, n]) => ({ handle, n })),
+      total: unnamed.size,
+    });
   }
-  out.names.unnamed = [...unnamed.entries()]
-    .sort((a, b) => b[1] - a[1]).slice(0, 20)
-    .map(([handle, n]) => ({ handle, n }));
-  out.names.unnamedTotal = unnamed.size;
+  out.names.unnamed = cache.get("unnamed").list;
+  out.names.unnamedTotal = cache.get("unnamed").total;
   out.ready = true;
   return out;
 }
@@ -442,6 +449,7 @@ const server = createServer((req, res) => {
       if (!existsSync(file)) return send(res, 500, "ui/index.html is missing", "text/plain");
       return send(res, 200, readFileSync(file), TYPES[".html"]);
     }
+    if (p === "/api/ping") return send(res, 200, { ok: true });
     if (p === "/api/status") return send(res, 200, status());
     if (p === "/api/ai") {
       const cfg = loadAiConfig(DATA);

@@ -18,7 +18,8 @@ import WebKit
 
 let port = ProcessInfo.processInfo.environment["MESSAGESTATS_PORT"] ?? "4173"
 let rootURL = URL(string: "http://127.0.0.1:\(port)/")!
-let statusURL = URL(string: "http://127.0.0.1:\(port)/api/status")!
+// Liveness only — deliberately not /api/status, which does real work.
+let pingURL = URL(string: "http://127.0.0.1:\(port)/api/ping")!
 
 // Shown while node boots. First launch also clones the repo, so this can be up
 // a few seconds on a cold start.
@@ -164,8 +165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     server = p
   }
 
-  /// Poll rather than parse stdout: /api/status answering 200 is the only
-  /// signal that actually means the page will load.
+  /// Poll rather than parse stdout: the server answering 200 is the only signal
+  /// that actually means the page will load.
   private func waitForServer() {
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       for _ in 0..<240 {                       // 60s, then give up
@@ -188,10 +189,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func probe() -> Bool {
     var ok = false
     let done = DispatchSemaphore(value: 0)
-    var req = URLRequest(url: statusURL)
+    var req = URLRequest(url: pingURL)
     req.timeoutInterval = 1
+    // Any HTTP reply means something is serving, including a 404. Insisting on
+    // 200 from a specific path would couple this sealed binary to the version
+    // of serve.mjs in the clone, and that clone updates itself independently.
     URLSession.shared.dataTask(with: req) { _, response, _ in
-      ok = (response as? HTTPURLResponse)?.statusCode == 200
+      ok = response is HTTPURLResponse
       done.signal()
     }.resume()
     _ = done.wait(timeout: .now() + 2)
@@ -210,13 +214,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 enum MessageStats {
+  /// Held here, not in main(), because NSApplication.delegate is a *weak*
+  /// reference. As a local it was released the moment main() stopped using it —
+  /// `_ = delegate` after run() looks like it pins the lifetime but is dead code
+  /// the optimiser drops. The app then ran with a nil delegate: no
+  /// applicationDidFinishLaunching, so no window and no server, which macOS
+  /// shows as an icon bouncing in the Dock forever. A static lives as long as
+  /// the process does.
+  static let delegate = AppDelegate()
+
   static func main() {
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)          // a real app: Dock icon, menu bar
-    let delegate = AppDelegate()
     app.delegate = delegate
     app.activate(ignoringOtherApps: true)
     app.run()
-    _ = delegate                               // keep the delegate alive
   }
 }
