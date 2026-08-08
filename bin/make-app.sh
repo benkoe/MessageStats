@@ -21,7 +21,7 @@ APP="$DEST/MessageStats.app"
 
 # Bump when something inside the bundle changes — the binary, bootstrap.sh, the
 # icon. Repo-side changes ship via git pull and don't need a new version here.
-VERSION="${MESSAGESTATS_VERSION:-1.2}"
+VERSION="${MESSAGESTATS_VERSION:-1.3}"
 BUNDLE_ID="${MESSAGESTATS_BUNDLE_ID:-com.benkoevary.messagestats}"
 
 mkdir -p "$DEST"
