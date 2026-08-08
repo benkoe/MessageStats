@@ -1,0 +1,19 @@
+# This folder holds a full copy of a personal iMessage history, plus notes
+# naming real people. None of it can be allowed near a remote.
+chat.db
+chat.db-wal
+chat.db-shm
+Messages/
+names.json
+
+# Local notes: real names, confirmed merges, machine-specific decisions.
+NOTES.local.md
+
+# Assistant config (may hold an API key) and the log of what was sent.
+ai.local.json
+ai-sent.local.jsonl
+*.local.md
+*.db
+*.db-wal
+*.db-shm
+.DS_Store

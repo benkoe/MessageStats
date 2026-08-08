@@ -1,0 +1,14 @@
+{
+  "_comment": "Easier: open the Ask panel in the web UI and set this up there — it lists the provider's real models so you don't have to know an id. Otherwise copy to ai.local.json (gitignored) and edit.",
+  "_quality_note": "Pick the most capable model you'll pay for. ~6KB per question, so the cost difference is fractions of a cent and the quality difference is the whole feature.",
+
+  "_openai_chatgpt": { "provider": "openai", "model": "<see GET /v1/models>", "apiKey": "sk-..." },
+  "_anthropic":      { "provider": "anthropic", "model": "claude-opus-5", "apiKey": "sk-ant-..." },
+  "_gemini":         { "provider": "gemini", "model": "<see the models list>", "apiKey": "..." },
+  "_openai_compatible": { "provider": "custom", "baseUrl": "https://your-host/v1", "model": "...", "apiKey": "..." },
+  "_local_privacy_over_quality": { "provider": "ollama", "model": "llama3.1" },
+
+  "provider": "openai",
+  "model": "<run Load models in the UI, or GET /v1/models>",
+  "apiKey": "sk-..."
+}

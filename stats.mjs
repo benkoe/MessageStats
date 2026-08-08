@@ -1,0 +1,291 @@
+/**
+ * Conversation stats for one iMessage chat. Read-only; writes nothing.
+ *
+ *   node stats.mjs --chat 1259
+ *   node stats.mjs --chat 1259 --merge
+ *   node stats.mjs --chat 1259 --names names.json
+ *   node stats.mjs --chat 1259 --top 15 --db /path/to/chat.db
+ *
+ * Find the ROWID with:  node list-chats.mjs
+ *
+ * One conversation often occupies several chat rows (a recreated group, an
+ * SMS/iMessage split, a rename). This warns when that is the case and tells
+ * you what share you are dropping; --merge folds them together.
+ *
+ * All the arithmetic lives in analyze.mjs. This file only formats it, so that
+ * the terminal and the web UI can never disagree about a number.
+ */
+
+import {
+  arg, bar, chatRosters, day, flag, head, human, loadIdentities, openDb, pad,
+  padL, pct, quote, resolveDbPath,
+} from "./lib.mjs";
+import { analyze, loadMessages, resolveChats, resolveMe } from "./analyze.mjs";
+
+const argv = process.argv.slice(2);
+const chatId = Number(arg(argv, "chat"));
+if (!Number.isInteger(chatId) || chatId <= 0) {
+  console.error("\n--chat <ROWID> is required.  Run:  node list-chats.mjs\n");
+  process.exit(1);
+}
+const TOP = Number(arg(argv, "top") ?? 10);
+// --merge          fold in sibling threads holding exactly the same people
+// --merge 2488,3676  fold in these chat ids explicitly, whatever their rosters
+const MERGE = flag(argv, "merge");
+const mergeArg = arg(argv, "merge");
+const MERGE_IDS = (mergeArg && !mergeArg.startsWith("--") ? mergeArg : "")
+  .split(",")
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isInteger(n) && n > 0);
+
+let db;
+try {
+  db = openDb(resolveDbPath(argv));
+} catch (err) {
+  // The message here is the setup instructions — a stack trace on top of them
+  // just buries the thing the reader needs.
+  console.error(`\n${err.message}\n`);
+  process.exit(1);
+}
+const { names, canonical } = loadIdentities(arg(argv, "names") ?? "names.json");
+
+const resolved = resolveChats(db, { chatId, merge: MERGE, mergeIds: MERGE_IDS, canonical });
+if (!resolved) {
+  console.error(`\nNo chat with ROWID ${chatId}. Run: node list-chats.mjs\n`);
+  process.exit(1);
+}
+const { chat, ids, siblings, named, ignored } = resolved;
+if (ignored.length) console.error(`\nIgnoring --merge id(s) with no messages: ${ignored.join(", ")}\n`);
+
+const meName = resolveMe(db, ids, { names, canonical });
+const { msgs, byGuid, label } = loadMessages(db, ids, { names, canonical, meName });
+if (msgs.length < 2) {
+  console.log(`\nOnly ${msgs.length} readable message(s) in chat ${chatId}. Nothing to say.\n`);
+  process.exit(0);
+}
+
+const A = analyze(db, { ids, msgs, byGuid, label, chat, top: TOP, names, canonical });
+const P = A.perPerson;
+
+/* ---------------- header ---------------- */
+
+console.log(`\n\x1b[1m${A.chat.name}\x1b[0m — ${A.total.toLocaleString()} messages, ${A.people.length} people`);
+console.log(
+  `${day(A.first)} .. ${day(A.last)}  (${A.spanDays.toLocaleString()} days, ` +
+    `${A.perDay.toFixed(1)}/day average)`
+);
+
+const listOf = (xs) => xs.map((s) => `${s.id} (${s.n.toLocaleString()})`).join(", ");
+
+if (ids.length > 1) {
+  const extra = ids.slice(1).map((id) => siblings.concat(named).find((s) => s.id === id) ?? { id, n: 0 });
+  console.log(`\x1b[36mMerged ${ids.length} threads: ${chatId} + ${listOf(extra)}\x1b[0m`);
+  // A renamed thread is still the same conversation, and the other names are
+  // how you recognise it. Keep every one of them on screen.
+  const holes = ids.map(() => "?").join(",");
+  const alt = [...new Set(
+    db.prepare(`select display_name dn from chat where ROWID in (${holes})`)
+      .all(...ids).map((r) => r.dn?.trim()).filter(Boolean)
+  )].filter((n) => n !== A.chat.name);
+  if (alt.length) console.log(`\x1b[36m  also known as: ${alt.map((n) => `"${n}"`).join(", ")}\x1b[0m`);
+
+  // When the merged rosters differ, membership is part of the story — a work
+  // group with staff churn reads as nonsense without it.
+  const rosters = chatRosters(db, canonical);
+  const keyOf = (id) => [...(rosters.get(id) ?? [])].sort().join("|");
+  if (new Set(ids.map(keyOf)).size > 1) {
+    console.log(`\x1b[36m  rosters differ across these threads:\x1b[0m`);
+    for (const id of ids) {
+      const s = siblings.concat(named).find((x) => x.id === id);
+      const who = [...(rosters.get(id) ?? [])].map((h) => names.get(h) ?? h).sort().join(", ");
+      const span = s?.first && s?.last ? `${day(s.first)} → ${day(s.last)}` : `${day(A.first)} → ${day(A.last)}`;
+      console.log(`    ${String(id).padEnd(6)}${span}   ${who || "—"}`);
+    }
+    console.log(
+      `\x1b[36m  Per-person totals below span the whole merge, so someone present\x1b[0m` +
+        `\n\x1b[36m  for only part of it will look quiet. Read the per-year columns.\x1b[0m`
+    );
+  }
+} else if (siblings.length) {
+  const extra = siblings.reduce((s, x) => s + x.n, 0);
+  const share = (extra / (A.total + extra)) * 100;
+  console.log(
+    `\n\x1b[33m⚠  These same ${A.people.length} people also have ` +
+      `${extra.toLocaleString()} message(s) in ${siblings.length} other thread(s): ${listOf(siblings)}\x1b[0m` +
+      `\n\x1b[33m   Roughly ${share < 0.05 ? "<0.1" : share.toFixed(1)}% of this conversation ` +
+      `is missing from everything below.\x1b[0m` +
+      `\n   Re-run with --merge to include it:  node stats.mjs --chat ${chatId} --merge`
+  );
+}
+
+// Softer tier, printed whether or not we merged: same name, different roster.
+if (named.length && !MERGE_IDS.length) {
+  const extra = named.reduce((s, x) => s + x.n, 0);
+  console.log(
+    `\n\x1b[33m?  ${named.length} other thread(s) share this name but have a different ` +
+      `roster: ${listOf(named)}\x1b[0m` +
+      `\n   ${extra.toLocaleString()} messages. Could be one group with people joining and` +
+      `\n   leaving — or a deliberately separate chat. NOT merged automatically.` +
+      `\n   If it is the same group:  node stats.mjs --chat ${chatId} --merge ${[chatId, ...named.map((s) => s.id)].join(",")}`
+  );
+}
+
+/* ---------------- per person ---------------- */
+
+const maxPer = P[0].n;
+head("Messages per person");
+console.log(`${pad("", 14)}${padL("TOTAL", 8)}  ${A.years.map((y) => padL(y, 7)).join("")}`);
+for (const p of P) {
+  const cells = A.years.map((y) => padL(p.byYear[y] ?? 0, 7)).join("");
+  console.log(`${pad(p.who, 14)}${padL(p.n.toLocaleString(), 8)}  ${cells}  ${padL(pct(p.n, A.total), 6)} ${bar(p.n, maxPer, 12)}`);
+}
+
+/* ---------------- busiest ---------------- */
+
+const B = A.busiest;
+head("Busiest stretches");
+console.log(`  busiest day    ${B.day.key}          ${B.day.n.toLocaleString()}`);
+console.log(`  busiest week   week of ${B.week.key}  ${B.week.n.toLocaleString()}`);
+console.log(`  busiest month  ${B.month.key}             ${B.month.n.toLocaleString()}`);
+console.log(`  busiest hour   ${B.hour.key}       ${B.hour.n.toLocaleString()}`);
+console.log(`\n  longest streak   ${B.streak.days} consecutive days (${B.streak.start} .. ${B.streak.end})`);
+console.log(`  days with any    ${B.activeDays.toLocaleString()} of ${A.spanDays.toLocaleString()} (${pct(B.activeDays, A.spanDays)})`);
+if (B.silence) {
+  console.log(`  longest silence  ${human(B.silence.ms)} after ${B.silence.after.who} on ${day(B.silence.after.ms)}`);
+  console.log(`                   "${quote(B.silence.after.text, 90)}"`);
+}
+
+/* ---------------- rhythm ---------------- */
+
+head("When they talk");
+const maxHour = Math.max(...A.rhythm.hours);
+for (let h = 0; h < 24; h += 1) {
+  console.log(`  ${String(h).padStart(2, "0")}:00 ${padL(A.rhythm.hours[h].toLocaleString(), 8)} ${bar(A.rhythm.hours[h], maxHour, 42)}`);
+}
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const maxDow = Math.max(...A.rhythm.dow);
+console.log();
+for (let d = 0; d < 7; d += 1) {
+  console.log(`  ${DOW[d]}  ${padL(A.rhythm.dow[d].toLocaleString(), 8)} ${bar(A.rhythm.dow[d], maxDow, 42)}`);
+}
+console.log(`\n  peak hour, and who's up at 2am:`);
+for (const p of P) {
+  console.log(
+    `    ${pad(p.who, 14)} peak ${String(p.peakHour).padStart(2, "0")}:00   ` +
+      `midnight-5am ${padL(p.night.toLocaleString(), 7)} (${pct(p.night, p.n)})`
+  );
+}
+
+/* ---------------- length ---------------- */
+
+head("Message length");
+for (const p of P) {
+  console.log(
+    `  ${pad(p.who, 14)} avg ${padL(p.avgLen.toFixed(1), 6)}   median ${padL(p.medianLen, 5)}   longest ${padL(p.maxLen.toLocaleString(), 7)}`
+  );
+}
+console.log(`\n  longest ever: ${A.longest.len.toLocaleString()} chars by ${A.longest.who}, ${day(A.longest.ms)}`);
+console.log(`    "${quote(A.longest.text, 160)}"`);
+
+/* ---------------- dynamics ---------------- */
+
+const D = A.dynamics;
+head("Conversation dynamics");
+console.log(`  ${pad("", 14)}${padL("STARTS", 8)}${padL("LAST WORD", 11)}${padL("MEDIAN REPLY", 14)}${padL("DOUBLE-TEXTS", 14)}`);
+for (const p of P) {
+  console.log(
+    `  ${pad(p.who, 14)}${padL(p.starts, 8)}${padL(p.lastWord, 11)}` +
+      `${padL(human(p.medianReply), 14)}` +
+      `${padL(`${p.doubles.toLocaleString()} (${pct(p.doubles, p.n)})`, 14)}`
+  );
+}
+console.log(`\n  "starts" = first message after ${D.gapHours}h of silence · "last word" = spoke before one`);
+console.log(`  longest monologue: ${D.monologue.n} messages in a row by ${D.monologue.who}, ${day(D.monologue.at)}`);
+if (D.fastest) {
+  console.log(`  fastest reply: ${(D.fastest.ms / 1000).toFixed(1)}s — ${D.fastest.reply.who} to ${D.fastest.to.who}, ${day(D.fastest.reply.ms)}`);
+  console.log(`    ${D.fastest.to.who}: "${quote(D.fastest.to.text, 60)}"`);
+  console.log(`    ${D.fastest.reply.who}: "${quote(D.fastest.reply.text, 60)}"`);
+}
+
+if (A.people.length > 2) {
+  head("Who answers whom fastest (median)");
+  console.log(`  ${pad("replier \\ to", 14)}${A.people.map((p) => padL(pad(p, 8), 9)).join("")}`);
+  for (const row of D.matrix) {
+    const cells = A.people.map((b) => padL(row.who === b ? "·" : row.to[b] == null ? "—" : human(row.to[b]), 9));
+    console.log(`  ${pad(row.who, 14)}${cells.join("")}`);
+  }
+  console.log(`  (blank = fewer than 5 replies to go on)`);
+}
+
+/* ---------------- tapbacks ---------------- */
+
+if (A.tapbacks) {
+  head("Tapbacks");
+  console.log(`  ${A.tapbacks.total.toLocaleString()} total · ${A.tapbacks.kinds.map((k) => `${k.kind} ${k.n.toLocaleString()}`).join(" · ")}`);
+  console.log(`\n  ${pad("", 14)}${padL("GIVEN", 8)}${padL("GOT", 8)}${padL("RATIO", 8)}${padL("PER MSG", 9)}`);
+  for (const p of P) {
+    console.log(
+      `  ${pad(p.who, 14)}${padL(p.given.toLocaleString(), 8)}${padL(p.received.toLocaleString(), 8)}` +
+        `${padL(p.received ? (p.given / p.received).toFixed(2) : "—", 8)}${padL((p.received / p.n).toFixed(3), 9)}`
+    );
+  }
+  console.log(`  ratio = given/got. Under 1.00 means they receive more than they give.`);
+  if (A.tapbacks.mostReacted.length) {
+    console.log(`\n  most-reacted messages:`);
+    for (const { n, msg } of A.tapbacks.mostReacted) {
+      console.log(`    ${padL(n, 3)}  ${pad(msg.who, 12)} ${day(msg.ms)}  "${quote(msg.text, 78)}"`);
+    }
+  }
+}
+
+/* ---------------- words ---------------- */
+
+head(`Most-used words (top ${TOP})`);
+for (const p of P) {
+  if (!p.topWords.length) continue;
+  console.log(`  \x1b[1m${p.who}\x1b[0m`);
+  console.log(`    ${p.topWords.map((w) => `${w.word} (${w.n.toLocaleString()})`).join(", ")}`);
+}
+
+head("Signature words — said far more than everyone else does");
+for (const s of A.signature.people) {
+  console.log(`  \x1b[1m${s.who}\x1b[0m`);
+  console.log(
+    `    ${s.words.map((w) => (w.ratio == null ? `${w.word} (${w.n}×, only them)` : `${w.word} (${w.n}×, ${w.ratio.toFixed(1)}x)`)).join(", ")}`
+  );
+}
+console.log(`  (Nx = how many times more often than the rest of the group; min ${A.signature.minUses} uses)`);
+
+if (A.emoji.overall.length) {
+  head("Emoji");
+  console.log(`  overall  ${A.emoji.overall.map((e) => `${e.emoji} ${e.n}`).join("   ")}`);
+  for (const p of P) {
+    if (p.topEmoji.length) console.log(`  ${pad(p.who, 14)} ${p.topEmoji.map((e) => `${e.emoji} ${e.n}`).join("  ")}`);
+  }
+}
+
+/* ---------------- odds and ends ---------------- */
+
+head("Odds and ends");
+console.log(`  ${pad("", 14)}${padL("LAUGHS", 9)}${padL("ASKS ?", 9)}${padL("SHOUTS", 9)}${padL("LINKS", 8)}${padL("VOCAB", 8)}`);
+for (const p of P) {
+  console.log(
+    `  ${pad(p.who, 14)}${padL(pct(p.laughs, p.n), 9)}${padL(pct(p.questions, p.n), 9)}` +
+      `${padL(p.shouts.toLocaleString(), 9)}${padL(p.links.toLocaleString(), 8)}${padL(p.vocab.toLocaleString(), 8)}`
+  );
+}
+console.log(`  laughs/asks = % of their messages · shouts = ALL-CAPS words · vocab = distinct words`);
+
+if (A.odds.domains.length) {
+  console.log(`\n  most-shared domains:`);
+  for (const d of A.odds.domains) console.log(`    ${padL(d.n.toLocaleString(), 6)}  ${d.domain}`);
+}
+
+console.log(`\n  most-repeated messages:`);
+for (const r of A.odds.repeated) console.log(`    ${padL(r.n.toLocaleString(), 6)}  "${quote(r.text, 60)}"`);
+
+console.log(`\n  first ever   ${day(A.odds.firstMsg.ms)}  ${A.odds.firstMsg.who}: "${quote(A.odds.firstMsg.text, 90)}"`);
+console.log(`  latest       ${day(A.odds.lastMsg.ms)}  ${A.odds.lastMsg.who}: "${quote(A.odds.lastMsg.text, 90)}"`);
+
+console.log();
+db.close();

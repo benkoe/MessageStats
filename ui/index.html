@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MessageStats</title>
+<style>
+/* Palette: validated categorical set, both modes. Light mode's aqua/yellow/
+   magenta sit under 3:1 on the surface, so every series is direct-labelled and
+   every chart has a table underneath — the relief rule, not an oversight. */
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --warn: #fab219; --crit: #d03b3b; --good: #0ca30c;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+  --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --seq-lo:#cde2fb; --seq-mid:#3987e5; --seq-hi:#2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme=light])) {
+    color-scheme: dark;
+    --surface:#1a1a19; --page:#0d0d0d;
+    --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+    --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --seq-lo:#104281; --seq-mid:#2a78d6; --seq-hi:#86b6ef;
+  }
+}
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --surface:#1a1a19; --page:#0d0d0d;
+  --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --seq-lo:#104281; --seq-mid:#2a78d6; --seq-hi:#86b6ef;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);
+  font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--s1)}
+h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.01em}
+h1{font-size:22px} h2{font-size:15px} h3{font-size:13px;color:var(--ink-2)}
+.wrap{display:grid;grid-template-columns:288px 1fr;min-height:100vh}
+@media (max-width:860px){.wrap{grid-template-columns:1fr}#side{position:static;height:auto;max-height:40vh}}
+
+/* sidebar */
+#side{background:var(--surface);border-right:1px solid var(--ring);position:sticky;top:0;
+  height:100vh;overflow:auto;padding:16px 0}
+.brand{padding:0 16px 12px;display:flex;align-items:baseline;gap:8px}
+.brand b{font-size:15px}
+.brand span{font-size:11px;color:var(--muted)}
+.search-box{margin:0 12px 10px}
+input,select,button{font:inherit;color:inherit}
+input[type=search],input[type=text],input[type=date],select{
+  width:100%;padding:7px 10px;border:1px solid var(--ring);border-radius:8px;
+  background:var(--page);color:var(--ink)}
+.chat{display:block;width:100%;text-align:left;padding:9px 16px;border:0;background:none;
+  cursor:pointer;border-left:2px solid transparent}
+.chat:hover{background:color-mix(in oklab,var(--s1) 7%,transparent)}
+.chat[aria-current=true]{background:color-mix(in oklab,var(--s1) 12%,transparent);border-left-color:var(--s1)}
+.chat .t{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.chat .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat .c{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
+.chat .p{color:var(--muted);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* main */
+main{padding:22px 26px 64px;max-width:1080px}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:16px 18px;margin:14px 0}
+.head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:baseline}
+.sub{color:var(--ink-2);font-size:13px}
+.flag{display:flex;gap:9px;padding:11px 13px;border-radius:10px;font-size:13px;margin:10px 0;
+  border:1px solid var(--ring);align-items:flex-start;line-height:1.45}
+.flag.warn{background:color-mix(in oklab,var(--warn) 12%,var(--surface))}
+.flag.info{background:color-mix(in oklab,var(--s1) 9%,var(--surface))}
+.flag b{font-weight:650}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:14px 0}
+.tile{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:11px 13px}
+.tile .v{font-size:21px;font-weight:650;letter-spacing:-.02em}
+.tile .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.tile .d{font-size:11.5px;color:var(--ink-2);margin-top:2px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:right;font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;
+  letter-spacing:.04em;padding:0 0 6px;border-bottom:1px solid var(--grid)}
+th:first-child,td:first-child{text-align:left}
+td{padding:5px 0;border-bottom:1px solid var(--grid);text-align:right;font-variant-numeric:tabular-nums}
+td:first-child{font-weight:550}
+.swatch{width:9px;height:9px;border-radius:2.5px;display:inline-block;margin-right:7px;vertical-align:middle}
+.legend{display:flex;flex-wrap:wrap;gap:5px 14px;margin:2px 0 10px;font-size:12px;color:var(--ink-2)}
+.bars{display:grid;gap:2px}
+.brow{display:grid;grid-template-columns:44px 58px 1fr;gap:8px;align-items:center;font-size:12px}
+.brow .lab{color:var(--ink-2);font-variant-numeric:tabular-nums}
+.brow .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.brow .bar{height:11px;border-radius:0 4px 4px 0;background:var(--seq-mid)}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--ring);
+  font-size:12px;margin:0 5px 5px 0;background:var(--page)}
+.msg{padding:6px 0;border-bottom:1px solid var(--grid)}
+.msg .m-h{font-size:11.5px;color:var(--muted)}
+.msg .m-t{white-space:pre-wrap;word-break:break-word}
+.msg.hit{background:color-mix(in oklab,var(--s4) 16%,transparent);border-radius:6px;padding:6px 8px}
+.ctx{opacity:.62;font-size:12.5px}
+button.act{padding:8px 13px;border-radius:9px;border:1px solid var(--ring);background:var(--surface);
+  cursor:pointer;font-weight:600}
+button.act:hover{background:color-mix(in oklab,var(--s1) 10%,var(--surface))}
+button.act.primary{background:var(--s1);border-color:var(--s1);color:#fff}
+.row{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
+/* inputs default to width:100%; inside a row they should share the line */
+.row>input,.row>select{width:auto;flex:0 1 auto}
+.row>input[type=search],.row>input[type=text]{flex:1 1 200px;min-width:160px}
+.steps{counter-reset:s;list-style:none;padding:0;margin:14px 0}
+.steps li{counter-increment:s;position:relative;padding:0 0 16px 38px;line-height:1.55}
+.steps li::before{content:counter(s);position:absolute;left:0;top:-1px;width:25px;height:25px;
+  border-radius:50%;background:var(--s1);color:#fff;display:grid;place-items:center;
+  font-size:12.5px;font-weight:650}
+code,kbd{background:var(--page);border:1px solid var(--ring);border-radius:5px;padding:1px 6px;
+  font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+svg{display:block;max-width:100%;overflow:visible}
+.tip{position:fixed;pointer-events:none;background:var(--surface);border:1px solid var(--ring);
+  border-radius:8px;padding:7px 10px;font-size:12px;box-shadow:0 6px 22px rgba(0,0,0,.16);
+  z-index:9;opacity:0;transition:opacity .1s}
+.scroll{overflow-x:auto}
+details>summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;padding:5px 0}
+.muted{color:var(--muted)}
+.mono{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside id="side">
+    <div class="brand"><b>MessageStats</b><span id="brand-sub">local only</span></div>
+    <div class="search-box"><input type="search" id="filter" placeholder="Filter conversations…" autocomplete="off"></div>
+    <div id="chatlist"></div>
+  </aside>
+  <main id="main"><p class="muted">Loading…</p></main>
+</div>
+<div class="tip" id="tip"></div>
+
+<script type="module">
+const $ = (s,r=document)=>r.querySelector(s);
+const el = (t,a={},...k)=>{const n=document.createElement(t);
+  for(const[p,v]of Object.entries(a)){ if(p==="class")n.className=v; else if(p==="html")n.innerHTML=v;
+    else if(p.startsWith("on"))n.addEventListener(p.slice(2),v); else if(v!=null)n.setAttribute(p,v);}
+  for(const c of k.flat()) if(c!=null) n.append(c.nodeType?c:document.createTextNode(c));
+  return n;};
+const api = async (u)=>{const r=await fetch(u); if(!r.ok) throw new Error((await r.json()).error||r.status); return r.json();};
+const N = n=>(n??0).toLocaleString();
+const pct = (a,b)=> b? (a/b*100).toFixed(1)+"%" : "—";
+const D = ms => new Date(ms).toISOString().slice(0,10);
+const DT = ms => new Date(ms).toISOString().slice(0,16).replace("T"," ");
+const dur = ms=>{const s=Math.round(ms/1000); if(s<60)return s+"s"; const m=Math.round(s/60);
+  if(m<60)return m+"m"; const h=Math.floor(m/60); if(h<48)return `${h}h ${m%60}m`; return `${Math.floor(h/24)}d ${h%24}h`;};
+const esc = s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const SERIES = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+const color = i => `var(${SERIES[i%8]})`;
+const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+/* ---------- tooltip ---------- */
+const tip=$("#tip");
+function showTip(e,html){tip.innerHTML=html;tip.style.opacity="1";
+  const r=tip.getBoundingClientRect();
+  tip.style.left=Math.min(innerWidth-r.width-8,e.clientX+13)+"px";
+  tip.style.top=Math.max(8,e.clientY-r.height-11)+"px";}
+const hideTip=()=>tip.style.opacity="0";
+
+/* ---------- charts (inline SVG, no library) ---------- */
+const NS="http://www.w3.org/2000/svg";
+const sv=(t,a)=>{const n=document.createElementNS(NS,t);for(const[k,v]of Object.entries(a||{}))
+  if(v!=null)n.setAttribute(k,v);return n;};
+
+/** Bars for a labelled series. Thin marks, 4px rounded end at the data side. */
+function barRows(items,{max,fmt=N,colorOf=()=>"var(--seq-mid)"}={}){
+  const hi = max ?? Math.max(...items.map(i=>i.v),1);
+  const box = el("div",{class:"bars"});
+  for(const it of items){
+    const w = hi? Math.max(it.v>0?2:0, it.v/hi*100):0;
+    const bar = el("div",{class:"bar"});
+    bar.style.width=w+"%"; bar.style.background=colorOf(it);
+    const row = el("div",{class:"brow"},
+      el("span",{class:"lab"},it.k), el("span",{class:"num"},fmt(it.v)), bar);
+    row.addEventListener("mousemove",e=>showTip(e,`<b>${esc(it.k)}</b> · ${fmt(it.v)}`));
+    row.addEventListener("mouseleave",hideTip);
+    box.append(row);
+  }
+  return box;
+}
+
+/** Multi-series line chart with a crosshair. Series are direct-labelled. */
+function lineChart(labels,series,{h=190,fmt=N,yLabel=""}={}){
+  const w=760,padL=44,padR=96,padT=12,padB=26;
+  const hi=Math.max(1,...series.flatMap(s=>s.values));
+  const x=i=>padL+(labels.length<2?0:i*(w-padL-padR)/(labels.length-1));
+  const y=v=>padT+(1-v/hi)*(h-padT-padB);
+  const svg=sv("svg",{viewBox:`0 0 ${w} ${h}`,role:"img","aria-label":yLabel||"chart"});
+  for(let g=0;g<=4;g++){const yy=padT+g*(h-padT-padB)/4;
+    svg.append(sv("line",{x1:padL,x2:w-padR,y1:yy,y2:yy,stroke:"var(--grid)","stroke-width":1}));
+    svg.append(Object.assign(sv("text",{x:padL-7,y:yy+4,"text-anchor":"end",fill:"var(--muted)","font-size":10}),
+      {textContent:fmt(Math.round(hi*(1-g/4)))}));}
+  labels.forEach((l,i)=>{ if(labels.length>12 && i%Math.ceil(labels.length/8)) return;
+    svg.append(Object.assign(sv("text",{x:x(i),y:h-8,"text-anchor":"middle",fill:"var(--muted)","font-size":10}),{textContent:l}));});
+  series.forEach((s,si)=>{
+    const d=s.values.map((v,i)=>`${i?"L":"M"}${x(i)},${y(v)}`).join(" ");
+    svg.append(sv("path",{d,fill:"none",stroke:color(si),"stroke-width":2,"stroke-linejoin":"round","stroke-linecap":"round"}));
+    s.values.forEach((v,i)=>{ const c=sv("circle",{cx:x(i),cy:y(v),r:4,fill:color(si),
+      stroke:"var(--surface)","stroke-width":2}); // 2px surface ring on overlap
+      c.addEventListener("mousemove",e=>showTip(e,`<b>${esc(s.name)}</b><br>${esc(labels[i])} · ${fmt(v)}`));
+      c.addEventListener("mouseleave",hideTip); svg.append(c);});
+  });
+  // Direct labels last, after de-colliding them vertically. Series that end
+  // close together would otherwise overprint into an unreadable smear — the
+  // labels are the accessibility channel here, so they have to stay legible.
+  const LINE=12;
+  const lab=series.map((s,si)=>({name:s.name,si,at:y(s.values[s.values.length-1]),y:0}));
+  lab.sort((a,b)=>a.at-b.at);
+  lab.forEach((l,i)=>{ l.y = i===0 ? l.at : Math.max(l.at, lab[i-1].y+LINE); });
+  // If pushing down overflowed the plot, pull the whole stack back up.
+  const over=lab.length? lab[lab.length-1].y-(h-padB) : 0;
+  if(over>0) for(const l of lab) l.y-=over;
+  for(const l of lab){
+    if(Math.abs(l.y-l.at)>2) // moved: draw a hairline back to its line end
+      svg.append(sv("line",{x1:x(labels.length-1)+3,y1:l.at,x2:x(labels.length-1)+7,y2:l.y-3,
+        stroke:"var(--axis)","stroke-width":1}));
+    svg.append(Object.assign(sv("text",{x:x(labels.length-1)+9,y:l.y,fill:"var(--ink-2)","font-size":11}),
+      {textContent:l.name}));
+  }
+  return svg;
+}
+
+/** Single-series area over time. Sequential blue. */
+let gradSeq=0;
+function areaChart(labels,values,{h=150,fmt=N}={}){
+  const w=760,padL=44,padR=12,padT=12,padB=24;
+  const hi=Math.max(1,...values);
+  const x=i=>padL+(values.length<2?0:i*(w-padL-padR)/(values.length-1));
+  const y=v=>padT+(1-v/hi)*(h-padT-padB);
+  const svg=sv("svg",{viewBox:`0 0 ${w} ${h}`,role:"img","aria-label":"messages over time"});
+  // Unique per chart — two area charts on one page would otherwise share an id
+  // and the second would paint itself with the first one's gradient.
+  const gid=`ag${++gradSeq}`;
+  const grad=sv("linearGradient",{id:gid,x1:0,y1:0,x2:0,y2:1});
+  grad.append(sv("stop",{offset:"0%","stop-color":"var(--seq-mid)","stop-opacity":.34}));
+  grad.append(sv("stop",{offset:"100%","stop-color":"var(--seq-mid)","stop-opacity":.02}));
+  const defs=sv("defs",{});           // append() returns undefined — don't chain
+  defs.append(grad);
+  svg.append(defs);
+  for(let g=0;g<=3;g++){const yy=padT+g*(h-padT-padB)/3;
+    svg.append(sv("line",{x1:padL,x2:w-padR,y1:yy,y2:yy,stroke:"var(--grid)","stroke-width":1}));
+    svg.append(Object.assign(sv("text",{x:padL-7,y:yy+4,"text-anchor":"end",fill:"var(--muted)","font-size":10}),
+      {textContent:fmt(Math.round(hi*(1-g/3)))}));}
+  const line=values.map((v,i)=>`${i?"L":"M"}${x(i)},${y(v)}`).join(" ");
+  svg.append(sv("path",{d:`${line} L${x(values.length-1)},${y(0)} L${x(0)},${y(0)} Z`,fill:`url(#${gid})`,stroke:"none"}));
+  svg.append(sv("path",{d:line,fill:"none",stroke:"var(--seq-mid)","stroke-width":2,"stroke-linejoin":"round"}));
+  labels.forEach((l,i)=>{ if(i%Math.ceil(labels.length/9)) return;
+    svg.append(Object.assign(sv("text",{x:x(i),y:h-6,"text-anchor":"middle",fill:"var(--muted)","font-size":10}),{textContent:l}));});
+  const hit=sv("rect",{x:padL,y:padT,width:w-padL-padR,height:h-padT-padB,fill:"transparent"});
+  const cross=sv("line",{y1:padT,y2:h-padB,stroke:"var(--axis)","stroke-width":1,opacity:0});
+  hit.addEventListener("mousemove",e=>{const b=svg.getBoundingClientRect();
+    const rel=(e.clientX-b.left)/b.width*w; let i=Math.round((rel-padL)/((w-padL-padR)/Math.max(1,values.length-1)));
+    i=Math.max(0,Math.min(values.length-1,i));
+    cross.setAttribute("x1",x(i));cross.setAttribute("x2",x(i));cross.setAttribute("opacity",1);
+    showTip(e,`<b>${esc(labels[i])}</b> · ${fmt(values[i])}`);});
+  hit.addEventListener("mouseleave",()=>{cross.setAttribute("opacity",0);hideTip();});
+  svg.append(cross,hit);
+  return svg;
+}
+
+/* ---------- state ---------- */
+let CHATS=[], CUR=null, OPT={merge:false,ids:[]};
+
+/* ---------- setup wizard ---------- */
+const MB = b => b==null? "?" : (b/1e6>=1000? (b/1e9).toFixed(2)+" GB" : Math.round(b/1e6)+" MB");
+
+async function renderSetup(st){
+  const m=$("#main"); m.innerHTML="";
+  m.append(el("h1",{},"Let's find your messages"));
+  m.append(el("p",{class:"sub"},"Everything happens on this machine. This page is served from 127.0.0.1 and the project has no network client in it at all."));
+  if(!st.db.found){
+    const src=await api("/api/source");
+    if(src.readable){
+      // We can read the live folder, so do the copying for them.
+      const total=src.parts.reduce((s,p)=>s+(p.bytes||0),0);
+      const card1=el("div",{class:"card"},
+        el("h2",{},"Found your Messages folder"),
+        el("p",{class:"sub"},src.dir," · ",src.parts.map(p=>`${p.name} ${MB(p.bytes)}`).join(" · ")),
+        el("p",{},"I can copy a snapshot here for you — no Finder required. It's ",el("b",{},MB(total)),", so give it a few seconds."));
+      if(src.messagesRunning) card1.append(el("div",{class:"flag warn"},el("div",{},
+        el("b",{},"Quit Messages first (⌘Q). "),
+        "It's running right now, which means the newest messages are sitting unflushed in the write-ahead log. Copying now still works, but the last little while of history may be missing.")));
+      const status=el("p",{class:"sub"});
+      card1.append(el("div",{class:"row"},
+        el("button",{class:"act primary",onclick:async ev=>{
+          ev.target.disabled=true; ev.target.textContent="Copying…";
+          status.textContent="Copying "+MB(total)+" — this is the slow part.";
+          try{
+            const r=await fetch("/api/import",{method:"POST"}).then(r=>r.json());
+            if(!r.ok) throw new Error(r.detail||r.error);
+            status.textContent="Copied "+r.copied.map(c=>c.name).join(", ")+".";
+            boot();
+          }catch(e){ status.textContent="Failed: "+e.message; ev.target.disabled=false; ev.target.textContent="Try again"; }
+        }},"Copy snapshot now"),
+        el("button",{class:"act",onclick:()=>{card1.after(manualCard());}},"I'd rather copy it myself")),
+        status);
+      m.append(card1);
+    } else {
+      m.append(el("div",{class:"card"},
+        el("h2",{},"macOS won't let me read your Messages folder"),
+        el("p",{},"That folder is protected, and there's no way for a program to ask for permission — you have to grant it by hand. Two options:"),
+        el("h3",{style:"margin-top:14px"},"Option A — grant Full Disk Access, then I'll do the copying"),
+        el("ol",{class:"steps"},
+          el("li",{},"System Settings → Privacy & Security → ",el("b",{},"Full Disk Access")),
+          el("li",{},"Add the app you ran ",el("code",{},"node serve.mjs")," from — Terminal, iTerm, or your editor"),
+          el("li",{},el("b",{},"Fully quit that app and reopen it"),
+            el("div",{class:"sub"},"The permission only applies to a freshly launched process.")),
+          el("li",{},"Run ",el("code",{},"node serve.mjs")," again and reload this page")),
+        el("div",{class:"row"},el("button",{class:"act primary",onclick:boot},"I've done that — recheck"))));
+      m.append(manualCard());
+    }
+    m.append(el("div",{class:"flag info"},el("div",{},
+      el("b",{},"Why a copy at all? "),
+      "The live database is being written to while Messages runs, so reading it directly gives inconsistent results. A snapshot is also safer: nothing this tool does can ever touch your real history.")));
+    return;
+  }
+  m.append(el("div",{class:"card"},
+    el("h2",{},"Database found"),
+    el("p",{class:"sub"},`${st.db.path} · ${N(st.db.sizeMB)} MB${st.db.wal?" · WAL present ✓":" · no -wal file, recent messages may be missing"}`),
+    st.db.ageHours!=null? el("p",{class:"sub"},
+      `Newest message ${DT(st.db.newest)} — ${st.db.ageHours<24?st.db.ageHours.toFixed(1)+"h old":Math.round(st.db.ageHours/24)+" days old"}`):null));
+  if(!st.names.found || st.names.count===0){
+    m.append(el("div",{class:"card"},
+      el("h2",{},"2. Put names to the numbers"),
+      el("p",{class:"sub"},"chat.db stores phone numbers, not names — those live in Contacts, which this tool reads only when you ask. Without this, every report is a wall of phone numbers."),
+      el("div",{class:"row"},
+        el("button",{class:"act primary",onclick:async ev=>{
+          ev.target.disabled=true; ev.target.textContent="Reading Contacts…";
+          const r=await fetch("/api/build-names",{method:"POST"}).then(r=>r.json());
+          alert(r.output||"done"); boot();
+        }},"Build names from Contacts"),
+        el("button",{class:"act",onclick:boot},"Skip for now"))));
+    return;
+  }
+  boot(true);
+}
+
+/* ---------- sidebar ---------- */
+function renderChats(list){
+  const box=$("#chatlist"); box.innerHTML="";
+  for(const c of list){
+    const b=el("button",{class:"chat",onclick:()=>openChat(c.id)},
+      el("div",{class:"t"},el("span",{class:"n"},c.name),el("span",{class:"c"},N(c.n))),
+      el("div",{class:"p"},c.isGroup? c.people.join(", ") : D(c.first)+" → "+D(c.last)));
+    if(c.siblings.length) b.append(el("div",{class:"p"},
+      el("span",{style:"color:var(--warn)"},"⚠ "),`split across ${c.siblings.length+1} threads`));
+    else if(c.named.length) b.append(el("div",{class:"p"},"? same name, other roster"));
+    b.dataset.id=c.id;
+    box.append(b);
+  }
+}
+$("#filter").addEventListener("input",e=>{
+  const q=e.target.value.toLowerCase();
+  renderChats(CHATS.filter(c=>(c.name+" "+c.people.join(" ")).toLowerCase().includes(q)));
+});
+
+/* ---------- chat detail ---------- */
+async function openChat(id,opt){
+  if(opt) OPT=opt; else OPT={merge:false,ids:[]};
+  CUR=id;
+  for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current",String(+b.dataset.id===id));
+  $("#main").innerHTML='<p class="muted">Reading messages…</p>';
+  const qs=new URLSearchParams();
+  if(OPT.merge) qs.set("merge","1");
+  if(OPT.ids?.length) qs.set("ids",OPT.ids.join(","));
+  let A; try{ A=await api(`/api/chat/${id}?${qs}`);}catch(e){ $("#main").innerHTML=`<p class="muted">${esc(e.message)}</p>`; return;}
+  if(A.error){ $("#main").innerHTML=`<p class="muted">${esc(A.error)}</p>`; return;}
+  render(A);
+}
+
+function render(A){
+  const m=$("#main"); m.innerHTML="";
+  const P=A.perPerson;
+
+  m.append(el("div",{class:"head"},el("h1",{},A.chat.name),
+    el("span",{class:"sub"},`${N(A.total)} messages · ${A.people.length} people · ${D(A.first)} → ${D(A.last)}`)));
+  if(A.aka?.length) m.append(el("p",{class:"sub"},"also known as ",A.aka.map(n=>`“${n}”`).join(", ")));
+
+  /* merge state */
+  if(A.chat.ids.length>1){
+    const f=el("div",{class:"flag info"},el("div",{},
+      el("b",{},`Merged ${A.chat.ids.length} threads. `),
+      A.chat.ids.join(" + ")));
+    m.append(f);
+    if(A.rostersDiffer){
+      const t=el("table",{},el("thead",{},el("tr",{},el("th",{},"thread"),el("th",{},"msgs"),el("th",{},"span"),el("th",{},"roster"))));
+      const tb=el("tbody",{});
+      for(const th of A.threads) tb.append(el("tr",{},el("td",{},String(th.id)),el("td",{},th.n?N(th.n):"—"),
+        el("td",{},th.first?`${D(th.first)} → ${D(th.last)}`:"—"),el("td",{style:"text-align:left"},th.roster.join(", ")||"—")));
+      t.append(tb);
+      m.append(el("div",{class:"card"},el("h2",{},"Rosters differ across these threads"),
+        el("p",{class:"sub"},"Per-person totals span the whole merge, so anyone present for only part of it looks quiet — read the per-year chart. Anyone who left is missing from every roster while their messages remain."),
+        el("div",{class:"scroll"},t)));
+    }
+  } else if(A.siblings?.length){
+    const extra=A.siblings.reduce((s,x)=>s+x.n,0);
+    const share=extra/(A.total+extra)*100;
+    m.append(el("div",{class:"flag warn"},el("div",{},
+      el("b",{},`These same people have ${N(extra)} more messages in ${A.siblings.length} other thread(s). `),
+      `About ${share<0.05?"<0.1":share.toFixed(1)}% of this conversation is missing from everything below.`,
+      el("div",{class:"row",style:"margin-top:8px"},
+        el("button",{class:"act",onclick:()=>openChat(A.chat.id,{merge:true,ids:[]})},"Merge them")))));
+  }
+  if(A.named?.length){
+    m.append(el("div",{class:"flag warn"},el("div",{},
+      el("b",{},`${A.named.length} thread(s) share this name but have a different roster. `),
+      "Could be one group with people joining and leaving — or a chat that deliberately excludes someone. Not merged automatically.",
+      el("div",{class:"row",style:"margin-top:8px"},
+        el("button",{class:"act",onclick:()=>openChat(A.chat.id,{merge:false,ids:[A.chat.id,...A.named.map(x=>x.id)]})},
+          "Treat as one group")))));
+  }
+
+  /* tiles */
+  const B=A.busiest;
+  m.append(el("div",{class:"tiles"},
+    tile(N(Math.round(A.perDay)),"per day",`${N(A.spanDays)} days`),
+    tile(N(B.day.n),"busiest day",B.day.key),
+    tile(N(B.streak.days),"day streak",`${B.streak.start} → ${B.streak.end}`),
+    tile(pct(B.activeDays,A.spanDays),"days active",`${N(B.activeDays)} of ${N(A.spanDays)}`),
+    B.silence? tile(dur(B.silence.ms),"longest gap","after "+B.silence.after.who):null,
+    A.tapbacks? tile((A.tapbacks.total/A.total).toFixed(2),"tapbacks / msg",N(A.tapbacks.total)+" total"):null));
+
+  /* volume over time */
+  const months=Object.keys(A.rhythm.byMonth).sort();
+  m.append(card("Messages over time",
+    areaChart(months,months.map(k=>A.rhythm.byMonth[k])),
+    "Monthly totals. Hover for the value."));
+
+  /* per person */
+  const yrs=A.years;
+  const series=P.slice(0,8).map(p=>({name:p.who,values:yrs.map(y=>p.byYear[y]??0)}));
+  const c1=card("Who talks, by year",lineChart(yrs.map(String),series,{yLabel:"messages per year"}));
+  c1.append(legend(P.slice(0,8).map((p,i)=>({name:p.who,i}))));
+  c1.append(personTable(P,A));
+  m.append(c1);
+
+  /* rhythm */
+  const hours=A.rhythm.hours;
+  m.append(card("When they talk",
+    el("div",{},
+      barRows(hours.map((v,h)=>({k:String(h).padStart(2,"0")+":00",v})),{}),
+      el("h3",{style:"margin:14px 0 6px"},"Day of week"),
+      barRows(A.rhythm.dow.map((v,d)=>({k:DOW[d],v})),{}))));
+
+  /* dynamics */
+  const dt=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"starts"),el("th",{},"last word"),
+    el("th",{},"median reply"),el("th",{},"double-texts"),el("th",{},"avg len"))));
+  const dtb=el("tbody",{});
+  P.forEach((p,i)=>dtb.append(el("tr",{},
+    el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+    el("td",{},N(p.starts)),el("td",{},N(p.lastWord)),el("td",{},dur(p.medianReply)),
+    el("td",{},`${N(p.doubles)} (${pct(p.doubles,p.n)})`),el("td",{},p.avgLen.toFixed(1)))));
+  dt.append(dtb);
+  const D2=A.dynamics;
+  const cd=card("Conversation dynamics",el("div",{class:"scroll"},dt),
+    `“starts” = first message after ${D2.gapHours}h of silence.`);
+  cd.append(el("p",{class:"sub"},`Longest monologue: ${D2.monologue.n} in a row by ${D2.monologue.who}, ${D(D2.monologue.at)}.`));
+  if(D2.fastest) cd.append(el("p",{class:"sub"},
+    `Fastest reply: ${(D2.fastest.ms/1000).toFixed(1)}s — ${D2.fastest.reply.who} to ${D2.fastest.to.who}, ${D(D2.fastest.reply.ms)}.`));
+  m.append(cd);
+
+  /* tapbacks */
+  if(A.tapbacks){
+    const tt=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"given"),el("th",{},"got"),
+      el("th",{},"ratio"),el("th",{},"per msg"))));
+    const ttb=el("tbody",{});
+    P.forEach((p,i)=>ttb.append(el("tr",{},
+      el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+      el("td",{},N(p.given)),el("td",{},N(p.received)),
+      el("td",{},p.received?(p.given/p.received).toFixed(2):"—"),el("td",{},(p.received/p.n).toFixed(3)))));
+    tt.append(ttb);
+    const ct=card("Tapbacks",el("div",{},
+      el("p",{class:"sub"},A.tapbacks.kinds.map(k=>`${k.kind} ${N(k.n)}`).join(" · ")),
+      el("div",{class:"scroll"},tt)),"Ratio under 1.00 means they receive more than they give.");
+    if(A.tapbacks.mostReacted.length){
+      ct.append(el("h3",{style:"margin:12px 0 4px"},"Most-reacted messages"));
+      for(const r of A.tapbacks.mostReacted)
+        ct.append(el("div",{class:"msg"},el("div",{class:"m-h"},`${r.n}× · ${r.msg.who} · ${D(r.msg.ms)}`),
+          el("div",{class:"m-t"},r.msg.text.slice(0,180))));
+    }
+    m.append(ct);
+  }
+
+  /* words */
+  const cw=card("Signature words",el("p",{class:"sub"},
+    `Said far more than everyone else does — min ${A.signature.minUses} uses. This is the section that actually characterises people.`));
+  for(const s of A.signature.people){
+    const i=P.findIndex(p=>p.who===s.who);
+    cw.append(el("h3",{style:"margin:10px 0 4px"},el("span",{class:"swatch",style:`background:${color(i)}`}),s.who));
+    cw.append(el("div",{},s.words.map(w=>el("span",{class:"chip"},`${w.word} ${w.n}× ${w.ratio==null?"only them":w.ratio.toFixed(1)+"x"}`))));
+  }
+  cw.append(el("details",{},el("summary",{},"Most-used words (raw counts)"),
+    ...P.map((p,i)=>el("div",{style:"margin:6px 0"},
+      el("h3",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+      el("div",{class:"sub"},p.topWords.map(w=>`${w.word} (${N(w.n)})`).join(", "))))));
+  m.append(cw);
+
+  /* emoji + odds */
+  if(A.emoji.overall.length){
+    const ce=card("Emoji",el("div",{style:"font-size:19px"},A.emoji.overall.map(e=>
+      el("span",{class:"chip",style:"font-size:16px"},`${e.emoji} ${e.n}`))));
+    for(const [i,p] of P.entries()) if(p.topEmoji.length)
+      ce.append(el("p",{class:"sub"},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who+" ",
+        p.topEmoji.map(e=>`${e.emoji} ${e.n}`).join("  ")));
+    m.append(ce);
+  }
+
+  const ot=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"laughs"),el("th",{},"asks ?"),
+    el("th",{},"shouts"),el("th",{},"links"),el("th",{},"vocab"))));
+  const otb=el("tbody",{});
+  P.forEach((p,i)=>otb.append(el("tr",{},
+    el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+    el("td",{},pct(p.laughs,p.n)),el("td",{},pct(p.questions,p.n)),el("td",{},N(p.shouts)),
+    el("td",{},N(p.links)),el("td",{},N(p.vocab)))));
+  ot.append(otb);
+  const co=card("Odds and ends",el("div",{class:"scroll"},ot));
+  if(A.odds.domains.length) co.append(el("p",{class:"sub"},el("b",{},"Domains: "),
+    A.odds.domains.map(d=>`${d.domain} (${N(d.n)})`).join(" · ")));
+  co.append(el("p",{class:"sub"},el("b",{},"Most repeated: "),
+    A.odds.repeated.map(r=>`“${r.text}” ×${N(r.n)}`).join(" · ")));
+  m.append(co);
+
+  /* search + assistant */
+  m.append(searchPanel(A));
+  m.append(askPanel(A));
+}
+
+/* ---------- assistant ---------- */
+const SUGGESTED = [
+  "What are the three most surprising things here?",
+  "Who wins arguments, and how can you tell?",
+  "What changed most between the first year and the last?",
+  "Which of these numbers are artifacts I shouldn't trust?",
+  "Roast this group based on the data.",
+];
+
+/**
+ * Setup, in the browser. Pick a provider, paste a key, then load the model list
+ * FROM the provider — nobody should have to know a model id from memory, and
+ * this page should never carry a hardcoded list that goes stale.
+ */
+function setupForm(cfg){
+  const box = el("div",{});
+  const prov = el("select",{}, ...cfg.providers.map(p=>
+    el("option",{value:p.id},p.label + (p.local?" — nothing leaves this machine":""))));
+  prov.value = "anthropic";
+  const key  = el("input",{type:"password",placeholder:"API key",autocomplete:"off"});
+  const base = el("input",{type:"text",placeholder:"https://your-host/v1"});
+  const model= el("select",{},el("option",{value:""},"— load models first —"));
+  const note = el("p",{class:"sub"});
+  const saveBtn = el("button",{class:"act primary"},"Save");
+  saveBtn.disabled = true;
+
+  const preset = ()=>cfg.providers.find(p=>p.id===prov.value);
+  const sync = ()=>{
+    const p = preset();
+    key.parentElement.style.display  = p.needsKey ? "" : "none";
+    base.parentElement.style.display = p.id==="custom" ? "" : "none";
+    note.textContent = p.local
+      ? "Runs on your machine — no key, nothing sent anywhere. Expect weaker analysis than a hosted model."
+      : "Statistics for the open conversation get sent to this provider when you ask a question. Every request is logged locally.";
+    model.innerHTML=""; model.append(el("option",{value:""},"— load models first —"));
+    saveBtn.disabled = true;
+  };
+  prov.addEventListener("change",sync); sync();
+
+  const load = async (ev)=>{
+    ev.target.disabled=true; const was=ev.target.textContent; ev.target.textContent="Loading…";
+    try{
+      const r = await fetch("/api/ai/models",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({provider:prov.value,apiKey:key.value||null,baseUrl:base.value||null})}).then(x=>x.json());
+      if(r.error) throw new Error(r.error);
+      model.innerHTML="";
+      for(const m of r.models) model.append(el("option",{value:m},m));
+      saveBtn.disabled=false;
+      note.textContent = `${r.models.length} models available. Pick the most capable one you're willing to pay for — this is where quality comes from.`;
+    }catch(e){ note.textContent = "Couldn't list models: "+e.message; }
+    ev.target.disabled=false; ev.target.textContent=was;
+  };
+  saveBtn.addEventListener("click",async ()=>{
+    saveBtn.disabled=true; saveBtn.textContent="Saving…";
+    try{
+      const r = await fetch("/api/ai/config",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({provider:prov.value,model:model.value,apiKey:key.value||null,baseUrl:base.value||null})}).then(x=>x.json());
+      if(r.error) throw new Error(r.error);
+      location.reload();
+    }catch(e){ note.textContent="Couldn't save: "+e.message; saveBtn.disabled=false; saveBtn.textContent="Save"; }
+  });
+
+  box.append(
+    el("p",{class:"sub"},"Off by default — this is the only feature that can send anything off this machine. Bring whatever you already have: ChatGPT, Claude, Gemini, or a local model."),
+    el("div",{class:"row",style:"margin:10px 0"},
+      el("div",{},el("h3",{},"Provider"),prov),
+      el("div",{},el("h3",{},"API key"),key),
+      el("div",{style:"flex:1;min-width:200px"},el("h3",{},"Base URL"),base)),
+    el("div",{class:"row"},
+      el("button",{class:"act",onclick:load},"Load models"),
+      el("div",{style:"flex:1;min-width:220px"},model),
+      saveBtn),
+    note,
+    el("details",{},el("summary",{},"Rather edit a file?"),
+      el("pre",{style:"overflow-x:auto"},el("code",{},
+`# ai.local.json, next to serve.mjs (gitignored)
+{ "provider": "anthropic", "model": "claude-opus-5",  "apiKey": "sk-ant-…" }
+{ "provider": "openai",    "model": "<from /v1/models>", "apiKey": "sk-…" }
+{ "provider": "ollama",    "model": "llama3.1" }`))));
+  return box;
+}
+
+function askPanel(A){
+  const card = el("div",{class:"card"}, el("h2",{},"Ask"));
+  const out = el("div",{});
+  api("/api/ai").then(cfg=>{
+    if(cfg.error){ card.append(el("div",{class:"flag warn"},el("div",{},el("b",{},"Assistant config problem: "),cfg.error))); return; }
+    if(!cfg.configured){ card.append(setupForm(cfg)); return; }
+    const q = el("input",{type:"text",placeholder:"Ask anything about this conversation…"});
+    const scope = el("input",{type:"text",placeholder:"optional: also search for a word first"});
+    const run = async ()=>{
+      if(!q.value.trim()) return;
+      out.innerHTML=""; out.append(el("p",{class:"muted"},`Thinking (${cfg.model})…`));
+      const t0=Date.now();
+      try{
+        const r = await fetch("/api/ai/ask",{method:"POST",headers:{"content-type":"application/json"},
+          body:JSON.stringify({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question:q.value,search:scope.value||null})})
+          .then(x=>x.json());
+        if(r.error) throw new Error(r.error);
+        out.innerHTML="";
+        out.append(el("div",{class:"m-t",style:"white-space:pre-wrap"},r.answer));
+        out.append(el("p",{class:"sub",style:"margin-top:10px"},
+          `${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"} · ${((Date.now()-t0)/1000).toFixed(1)}s`));
+      }catch(e){ out.innerHTML=""; out.append(el("p",{class:"muted"},"Failed: "+esc(e.message))); }
+    };
+    q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
+    card.append(
+      el("p",{class:"sub"},
+        cfg.local ? `Running on ${cfg.label} — nothing leaves this machine.`
+                  : `Using ${cfg.label} (${cfg.model}). Statistics are sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`),
+      el("div",{class:"row",style:"margin-bottom:8px"},q,scope,el("button",{class:"act primary",onclick:run},"Ask")),
+      el("div",{style:"margin-bottom:10px"},SUGGESTED.map(s=>
+        el("span",{class:"chip",style:"cursor:pointer",onclick:()=>{q.value=s;run();}},s))),
+      out);
+  }).catch(()=>card.append(el("p",{class:"muted"},"Couldn't read assistant config.")));
+  return card;
+}
+
+const manualCard=()=>el("div",{class:"card"},
+  el("h2",{},"Option B — copy it yourself"),
+  el("ol",{class:"steps"},
+    el("li",{},el("b",{},"Quit Messages"),
+      el("div",{class:"sub"},"⌘Q, not just closing the window. Otherwise the newest messages sit unflushed in the write-ahead log and are silently missing.")),
+    el("li",{},"In Finder press ⇧⌘G and go to ",el("code",{},"~/Library/Messages")),
+    el("li",{},"Copy ",el("b",{},"all three")," files next to ",el("code",{},"serve.mjs"),":",
+      el("div",{class:"sub"},el("code",{},"chat.db"),"  ",el("code",{},"chat.db-wal"),"  ",el("code",{},"chat.db-shm"),
+        el("div",{},"chat.db on its own opens fine and quietly omits your most recent history."))),
+    el("li",{},"Come back and reload.")),
+  el("div",{class:"row"},el("button",{class:"act primary",onclick:boot},"I've copied them — reload")));
+
+const tile=(v,k,d)=>el("div",{class:"tile"},el("div",{class:"v"},v),el("div",{class:"k"},k),d?el("div",{class:"d"},d):null);
+const card=(title,body,sub)=>el("div",{class:"card"},el("h2",{},title),sub?el("p",{class:"sub"},sub):null,body);
+const legend=items=>el("div",{class:"legend"},items.map(({name,i})=>
+  el("span",{},el("span",{class:"swatch",style:`background:${color(i)}`}),name)));
+
+function personTable(P,A){
+  const t=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"total"),el("th",{},"share"),
+    ...A.years.map(y=>el("th",{},String(y))))));
+  const tb=el("tbody",{});
+  P.forEach((p,i)=>tb.append(el("tr",{},
+    el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+    el("td",{},N(p.n)),el("td",{},pct(p.n,A.total)),
+    ...A.years.map(y=>el("td",{},N(p.byYear[y]??0))))));
+  t.append(tb);
+  return el("div",{class:"scroll",style:"margin-top:10px"},t);
+}
+
+/* ---------- search ---------- */
+function searchPanel(A){
+  const q=el("input",{type:"search",placeholder:"Search this conversation…"});
+  const who=el("select",{},el("option",{value:""},"anyone"),...A.people.map(p=>el("option",{value:p},p)));
+  const from=el("input",{type:"date"}), to=el("input",{type:"date"});
+  const out=el("div",{});
+  const run=async()=>{
+    if(!q.value.trim()){ out.innerHTML=""; return; }
+    out.innerHTML='<p class="muted">Searching…</p>';
+    const p=new URLSearchParams({q:q.value});
+    if(OPT.merge)p.set("merge","1"); if(OPT.ids?.length)p.set("ids",OPT.ids.join(","));
+    if(who.value)p.set("who",who.value); if(from.value)p.set("from",from.value); if(to.value)p.set("to",to.value);
+    const r=await api(`/api/chat/${A.chat.id}/search?${p}`);
+    out.innerHTML="";
+    out.append(el("p",{class:"sub"},`${N(r.total)} matching messages · `,
+      Object.entries(r.byPerson).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} ${N(v)}`).join(" · ")));
+    const ms=Object.keys(r.byMonth).sort();
+    if(ms.length>1) out.append(areaChart(ms,ms.map(k=>r.byMonth[k]),{h:110}));
+    for(const h of r.hits){
+      const blk=el("div",{style:"margin:12px 0"});
+      for(const b of h.before) blk.append(msgEl(b,"ctx"));
+      blk.append(msgEl(h,"hit"));
+      for(const a of h.after) blk.append(msgEl(a,"ctx"));
+      out.append(blk);
+    }
+    if(!r.total) out.append(el("p",{class:"muted"},"Nothing found."));
+  };
+  q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
+  return el("div",{class:"card"},el("h2",{},"Search"),
+    el("p",{class:"sub"},"Find any phrase and read it in context — the thing the terminal can't do without writing a throwaway script."),
+    el("div",{class:"row",style:"margin-bottom:10px"},q,who,from,to,el("button",{class:"act primary",onclick:run},"Search")),
+    out);
+}
+const msgEl=(m,cls)=>el("div",{class:"msg "+(cls||"")},
+  el("div",{class:"m-h"},`${m.who} · ${DT(m.ms)}`),el("div",{class:"m-t"},m.text));
+
+/* ---------- boot ---------- */
+async function boot(skipSetup){
+  const st=await api("/api/status");
+  $("#brand-sub").textContent = st.db.ageHours!=null
+    ? (st.db.ageHours<24? st.db.ageHours.toFixed(0)+"h old" : Math.round(st.db.ageHours/24)+"d old") : "local only";
+  if(!st.ready || (!skipSetup && (!st.names.found || st.names.count===0))) return renderSetup(st);
+  CHATS=await api("/api/chats?min=200");
+  renderChats(CHATS);
+  const m=$("#main"); m.innerHTML="";
+  m.append(el("h1",{},"Pick a conversation"));
+  m.append(el("p",{class:"sub"},`${N(CHATS.length)} conversations with 200+ messages. Everything runs locally; nothing is uploaded.`));
+  const split=CHATS.filter(c=>c.siblings.length), churn=CHATS.filter(c=>!c.siblings.length&&c.named.length);
+  if(split.length) m.append(el("div",{class:"flag warn"},el("div",{},
+    el("b",{},`${split.length} conversations are split across several chat rows. `),
+    "Same people, different chat_identifier — a recreated group, a rename, or an SMS fork. Open one and press Merge, or you'll be reading part of the history.")));
+  if(churn.length) m.append(el("div",{class:"flag warn"},el("div",{},
+    el("b",{},`${churn.length} share a name with a differently-staffed thread. `),
+    "Never merged automatically — a work group with staff churn looks identical to a chat that deliberately excludes someone.")));
+  if(st.names.unnamed?.length){
+    const big=st.names.unnamed.filter(u=>u.n>=50);
+    if(big.length) m.append(el("div",{class:"flag warn"},el("div",{},
+      el("b",{},`${big.length} senders have 50+ messages and no name. `),
+      "They'll show up as phone numbers: ",big.slice(0,4).map(u=>`${u.handle} (${N(u.n)})`).join(", "),
+      ". Add them to names.json by hand — if one of them is someone you know under another number, add an alias instead or they'll be counted as two people.")));
+  }
+}
+boot();
+</script>
+</body>
+</html>
