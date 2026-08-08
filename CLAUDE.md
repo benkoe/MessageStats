@@ -23,9 +23,33 @@ The CLI reads that copy and never touches `~/Library/Messages`. The web UI can
 *create* the copy for you, which is the one thing that needs Full Disk Access;
 `node serve.mjs` alone does not.
 
-Build, signing and release knowledge lives in `CLAUDE.local.md`, which is
-gitignored because this repo is public and that file names certificates and
-release mechanics. Read it before touching anything in `bin/`.
+## Where build knowledge lives
+
+Everything about `bin/` — signing, notarizing, releasing, and the macOS
+behaviour that cost real time to learn — is in `CLAUDE.local.md`. Read it
+before touching anything in `bin/`. If it isn't in your checkout:
+
+```
+git fetch origin docs
+git show origin/docs:CLAUDE.local.md > CLAUDE.local.md
+```
+
+It is gitignored here (`*.local.md`) and lives on the **`docs` branch**. Two
+rules keep it that way, and they solve two different problems:
+
+- **Off `main`, so it is never pulled.** Installs run `git pull` on `main`
+  every launch, and `git clone --depth 1` fetches only the default branch. A
+  branch keeps it off every other machine.
+- **Nothing identifying in it, because a branch is still public.** A branch on
+  a public repo is browsable and indexed exactly like `main` — it stops the
+  file being *pulled*, not *found*. So no Apple ID, no Team ID, no certificate
+  holder, no email goes in it. Credentials get looked up from the keychain at
+  build time. The app's signature necessarily publishes the team; that is the
+  only place it should appear.
+
+The same two rules apply to anything else worth keeping but not shipping.
+Push updates with the plumbing recipe at the bottom of that file — it updates
+the branch without switching your working tree off `main`.
 
 @CLAUDE.local.md
 
