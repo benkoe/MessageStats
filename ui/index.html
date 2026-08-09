@@ -710,6 +710,40 @@ function render(A){
     `Fastest reply: ${(D2.fastest.ms/1000).toFixed(1)}s — ${D2.fastest.reply.who} to ${D2.fastest.to.who}, ${D(D2.fastest.reply.ms)}.`));
   m.append(cd);
 
+  /* who answers whom — the exact graph */
+  if(A.replyGraph && A.replyGraph.edges.length){
+    const G=A.replyGraph;
+    const shown=G.perPerson.filter(p=>p.given||p.got);
+    const order=shown.map(p=>p.who);
+    const cell=new Map(G.edges.map(e=>[`${e.from}>${e.to}`,e]));
+    const rg=el("table",{},el("thead",{},el("tr",{},el("th",{},"answerer"),
+      ...order.map(o=>el("th",{class:"tb-n"},o.split(" ")[0])),
+      el("th",{},"gave"),el("th",{},"got"))));
+    const body=el("tbody",{});
+    for(const p of shown){
+      const top=Math.max(1,...order.map(o=>cell.get(`${p.who}>${o}`)?.n??0));
+      body.append(el("tr",{},
+        el("td",{},el("span",{class:"swatch",style:`background:${color(P.findIndex(x=>x.who===p.who))}`}),p.who),
+        ...order.map(o=>{
+          const e=cell.get(`${p.who}>${o}`);
+          const a=e? (0.06+0.26*(e.n/top)).toFixed(3) : 0;
+          return el("td",{class:"tb-n",title:e?.medianMs!=null?`median ${Math.round(e.medianMs/1000)}s`:"",
+            style:e?`background:color-mix(in oklab,var(--s1) ${a*100}%,transparent)`:""},
+            e? N(e.n) : el("span",{class:"muted"},"—"));
+        }),
+        el("td",{class:"tb-n"},N(p.given)),el("td",{class:"tb-n"},N(p.got))));
+    }
+    rg.append(body);
+    const rc=card("Who replies to whom",el("div",{},
+      el("div",{class:"scroll"},rg),
+      el("p",{class:"sub",style:"margin-top:8px"},
+        "Read across a row: who that person answers. Hover a cell for the median time they take. ",
+        el("b",{},"got")," is how many replies their own messages drew — the gap between ",
+        el("b",{},"gave")," and ",el("b",{},"got")," is who the conversation orbits.")),
+      `Built from the ${N(G.used)} messages sent with the reply gesture — ${(G.share*100).toFixed(1)}% of this conversation. Exact, unlike the reply times elsewhere in this report, which assume whoever spoke next was answering.`);
+    m.append(rc);
+  }
+
   /* group history */
   if(A.groupHistory){
     const G=A.groupHistory;

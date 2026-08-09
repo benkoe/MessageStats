@@ -524,6 +524,71 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
 
   const holes = ids.map(() => "?").join(",");
 
+  /* ---- the real reply graph ---- */
+  /**
+   * `thread_originator_guid` is set when someone uses the inline reply gesture,
+   * and it names the exact message being answered. Everything else in this file
+   * infers replies from time adjacency, which conflates "answered you" with
+   * "happened to speak next" — the usual case where three people are talking at
+   * once and the proxy credits whoever was last.
+   *
+   * The two are kept apart rather than merged. Adjacency covers every message
+   * and is a guess; this covers a few percent and is a fact. Reporting a
+   * blended number would make both untrustworthy, so the card states its own
+   * coverage and lets you judge it.
+   *
+   * The guid carries no part prefix, unlike `associated_message_guid` — the
+   * part is in `thread_originator_part`, which nothing here needs.
+   */
+  const threadRows = hasColumns(db, "message", "thread_originator_guid")
+    ? db.prepare(
+        `select m.thread_originator_guid orig, m.is_from_me fromMe, h.id handle,
+                ${DATE_TO_MICROS.replace("date", "m.date")} us
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+           left join handle h on h.ROWID = m.handle_id
+          where j.chat_id in (${holes}) and m.thread_originator_guid is not null
+            and ${REAL_MESSAGE_WHERE}`
+      ).all(...ids)
+    : [];
+
+  const edgeN = new Map();       // "answerer>answered" -> count
+  const edgeLag = new Map();     // same key -> latencies
+  const answersGiven = new Map();
+  const answersGot = new Map();
+  let resolved = 0;
+  for (const r of threadRows) {
+    const target = byGuid.get(r.orig);
+    if (!target) continue;       // the answered message is outside this chat
+    resolved += 1;
+    const from = label(r.handle, r.fromMe === 1);
+    const to = target.who;
+    inc(answersGiven, from);
+    inc(answersGot, to);
+    if (from === to) continue;   // answering yourself is not a relationship
+    const key = `${from}>${to}`;
+    inc(edgeN, key);
+    if (!edgeLag.has(key)) edgeLag.set(key, []);
+    const lag = appleMicrosToMs(r.us) - target.ms;
+    if (lag >= 0) edgeLag.get(key).push(lag);
+  }
+  const replyGraph = resolved === 0 ? null : {
+    // Say how much of the conversation this is built from — a few percent is
+    // normal, and a reader who doesn't know that will over-read the ranking.
+    used: resolved,
+    share: resolved / total,
+    edges: [...edgeN.entries()]
+      .map(([k, n]) => {
+        const [from, to] = k.split(">");
+        const lags = edgeLag.get(k) ?? [];
+        return { from, to, n, medianMs: lags.length >= 5 ? median(lags) : null };
+      })
+      .sort((a, b) => b.n - a.n),
+    perPerson: people.map((p) => ({
+      who: p, given: answersGiven.get(p) ?? 0, got: answersGot.get(p) ?? 0,
+    })).sort((a, b) => b.got - a.got),
+  };
+
   /* ---- group history: renames, joins, leaves ---- */
   /**
    * These are messages with `item_type <> 0`, which is why a fifth of the
@@ -896,6 +961,7 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
         .map(([g, n]) => ({ n, msg: msgRef(byGuid.get(g)) }))
         .filter((x) => x.msg),
     },
+    replyGraph,
     groupHistory: history.length || departed.length ? { events: history, departed } : null,
     signature: { minUses, people: signature },
     pickedUp: pickedUp.length ? { minUses, people: pickedUp } : null,

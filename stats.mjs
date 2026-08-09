@@ -208,13 +208,34 @@ if (D.fastest) {
 }
 
 if (A.people.length > 2) {
-  head("Who answers whom fastest (median)");
+  head("How fast people answer (inferred)");
+  console.log(`  Assumes whoever spoke next was answering, so it covers everything and`);
+  console.log(`  is a guess. "Who replies to whom" below is exact but sparser.\n`);
   console.log(`  ${pad("replier \\ to", 14)}${A.people.map((p) => padL(pad(p, 8), 9)).join("")}`);
   for (const row of D.matrix) {
     const cells = A.people.map((b) => padL(row.who === b ? "·" : row.to[b] == null ? "—" : human(row.to[b]), 9));
     console.log(`  ${pad(row.who, 14)}${cells.join("")}`);
   }
   console.log(`  (blank = fewer than 5 replies to go on)`);
+}
+
+/* ---------------- who answers whom ---------------- */
+
+if (A.replyGraph?.edges.length) {
+  const G = A.replyGraph;
+  head("Who replies to whom (exact)");
+  console.log(`  from ${G.used.toLocaleString()} messages sent with the reply gesture — ${(G.share * 100).toFixed(1)}% of this conversation.`);
+  console.log(`  Exact, unlike the reply times above, which assume whoever spoke next was answering.\n`);
+  for (const e of G.edges.slice(0, 12)) {
+    console.log(`  ${pad(e.from, 16)} → ${pad(e.to, 16)} ${padL(e.n.toLocaleString(), 6)}` +
+      (e.medianMs != null ? `   median ${human(e.medianMs)}` : ""));
+  }
+  console.log(`\n  ${pad("", 16)}${padL("GAVE", 8)}${padL("GOT", 8)}`);
+  for (const p of A.replyGraph.perPerson) {
+    if (!p.given && !p.got) continue;
+    console.log(`  ${pad(p.who, 16)}${padL(p.given.toLocaleString(), 8)}${padL(p.got.toLocaleString(), 8)}`);
+  }
+  console.log(`  "got" = replies their own messages drew.`);
 }
 
 /* ---------------- group history ---------------- */
