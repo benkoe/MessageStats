@@ -263,6 +263,42 @@ Anything that awaits before touching `#main` must capture `PAGE` first and bail
 if it changed — otherwise a click during the wait leaves the slow render
 appended under whatever the user opened instead.
 
+### Setting `location.hash` *and* rendering renders twice
+
+`#setbtn` used to do `location.hash="settings"; renderSettings();`. Assigning
+the hash fires `hashchange`, whose listener also calls `renderSettings()` — so
+two renders raced, each cleared `#main` before its own `await`, and each then
+appended a full set of cards. The Settings page came out **doubled**.
+
+It looked like an assistant bug because it appeared to fix itself once a key
+was saved: saving reloads the page, and on reload the hash is *already*
+`#settings`, so assigning it again fires no event and only one render runs.
+
+Two fixes, both worth keeping. `renderSettings()` now takes `gen=newPage()` and
+returns if `gen!==PAGE` after its await — the same generation guard the rest of
+the async renders use. And the click handler only renders directly when the
+hash is already `#settings`; otherwise it sets the hash and lets `hashchange`
+do it. Either alone would have worked; the guard is the one that generalises.
+
+### The assistant: tone presets, and never present a cut-off answer as whole
+
+`TONES` in `serve.mjs` appends a tone instruction to `AI_SYSTEM`. The grounding
+rules stay in front of every preset, so no tone can license inventing a figure
+to land a joke — "roast them" still has to roast them with real numbers.
+
+`ask()` in `llm.mjs` returns `{ text, truncated }` rather than a bare string.
+An answer that stopped at the token ceiling is indistinguishable from a
+finished one — it simply ends mid-sentence — and one did: a question asking for
+a line per person in a large group ran past 4,096 tokens and stopped mid-word,
+with nothing anywhere saying so. Each provider reports it differently
+(`finish_reason:"length"`, `stop_reason:"max_tokens"`, `finishReason:"MAX_TOKENS"`),
+so each wire has its own `truncated` probe. The ceiling is now 16,384, but the
+flag matters more than the number: a truncated answer costs the same as a
+complete one and is worth nothing, so it must be visible.
+
+Export builds the Markdown in the page and downloads a Blob — the server never
+sees it, which keeps the local-only promise true for exports too.
+
 ### Look for one-way doors
 
 Three separate screens shipped as "first run only" with no way back: the setup
@@ -302,6 +338,20 @@ out of the attachment/edit/read-receipt work:
 - **Apostrophes are stripped by the tokenizer**, so `wasn't` arrives as `wasn`.
   The contraction stumps are in the stop list; add to it rather than reworking
   the tokenizer.
+- **URLs are not words, and they win if you let them.** A pasted link
+  contributes its scheme, host and every path and query segment as separate
+  tokens. Before this was fixed, `https` was the single most-used token in one
+  chat (1,658), with `youtu`, `www` and `utm` close behind, and Instagram's
+  share ids (`igsh`, `igshid`, plus strings like `gazm7xlppunwzle4tqno2q`)
+  ranked as people's *signature vocabulary* — the section that is supposed to
+  characterise someone was describing their link habits. `words()` in
+  `analyze.mjs` strips URLs and emails first, then drops letter+digit mixes
+  (ids) and bare numbers including ordinals and years. Matching only
+  `https?://` is not enough: `instagram.com/reel/x` has no scheme, so the bare
+  domain pattern matters too. Both the signature-word and picked-up-word
+  passes call it, so they can never disagree. Validated on a 154k-message chat:
+  the id soup goes, while `maye` (561), `duran` (351), `bregman` (311),
+  `knicks` (510), `idno` (205) and `crochet` (215) all survive.
 - **Rolling windows, not calendar years,** for any "then vs now" comparison.
   The current year is always partial, which makes everyone look like they are
   drifting away.
