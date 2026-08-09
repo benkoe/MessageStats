@@ -87,35 +87,33 @@ Unlike `associated_message_guid`, this guid carries **no part prefix** — the
 part is in `thread_originator_part`, which nothing needs. Self-replies are
 dropped from the graph; answering yourself is not a relationship.
 
-### 3. Service mix
+### 3. ~~Service mix~~ — DONE 2026-08-09
 
-| service | messages |
-|---|---|
-| iMessage | 847,599 |
-| SMS | 35,352 |
-| RCS | 7,577 |
-| iMessageLite | 1 |
+Shipped as the "How it's sent" card, **shown only when a conversation actually
+mixes services** — an all-iMessage chat learns nothing from a column of 100%s.
 
-Per-person and per-chat green-bubble share, and RCS adoption over time. Trivial
-`group by`.
+Reported as **counts, not percentages**: in one 153k-message group RCS is 0.2%,
+which rounds to "0%" and reads as *never* when it actually happened 290 times.
+That chat also turned out to have a clean artifact — RCS appears for exactly
+one week in January 2025 and never again, which the date span makes visible.
 
-### 4. Screenshot vs. camera
+### 4. ~~Screenshot vs. camera~~ — DONE 2026-08-09
 
-`attachment.transfer_name` separates cleanly, and the split is a genuine
-personality axis rather than a volume restatement:
+A "Camera or screen" table inside Attachments, with a screen-share percentage.
+It is a real personality axis, not a volume restatement: in one group somebody
+sends 344 camera photos and **zero** screenshots while another is 176 camera to
+161 screenshots — half of what they send is their phone rather than their life.
 
-| pattern | count |
-|---|---|
-| link card (`*.pluginPayloadAttachment`) | 37,561 |
-| `IMG_*` | 28,479 |
-| screenshot | 3,936 |
-| `FullSizeRender*` | 112 |
-| screen recording (`RPReplay*`) | 32 |
-| other | 17,185 |
+Detection is by filename, since a screenshot and a photograph are both
+`image/*` and identical by mime type: `IMG_`/`FullSizeRender`/`DSC`/`PXL` for
+the camera, `Screenshot`/`Screen Shot` for captures, `RPReplay` for
+recordings. Anything named otherwise — saved, forwarded, or from Android — is
+counted in neither column, and the caption says so rather than implying the
+two add up to everything.
 
-Link cards are **43% of all 87,305 attachment rows**, which re-confirms the
-`attachmentKind()` decision to hold them out of media totals. Also available
-and unused: `is_sticker` (785 rows).
+Link cards remain **43% of all attachment rows**, which keeps re-confirming the
+`attachmentKind()` decision to hold them out of media totals. Still unused:
+`is_sticker` (785 rows).
 
 ### 5. Expressive effects — small, keep it small
 
@@ -255,7 +253,8 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
 1. ~~Fix the data-directory discrepancy~~ — done 2026-08-09.
 2. ~~Group rename timeline + membership events~~ — done 2026-08-09.
 3. ~~True reply graph~~ — done 2026-08-09.
-4. Service mix and screenshot/camera split — Phase 1.3–1.4, near-free.
-   **Next up.**
-5. Decide the bplist question, then rich links — Phase 2.6.
+4. ~~Service mix and screenshot/camera split~~ — done 2026-08-09.
+   **Phase 1 is complete**, apart from the deliberately-skipped expressive
+   effects (401 rows, footnote-scale).
+5. Decide the bplist question, then rich links — Phase 2.6. **Next up.**
 6. Edit history **only after an explicit decision** — Phase 2.7.
