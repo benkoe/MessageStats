@@ -315,6 +315,10 @@ if (A.tapbacks) {
   }
   console.log(`  ${pad("everyone", 14)}${K.map((k) => padL(k.n.toLocaleString(), 8)).join("")}`);
   console.log(`  ${K.map((k) => `${k.icon} ${k.kind}`).join(" · ")}`);
+  // "emoji 93" says nothing; which emoji says a lot.
+  if (A.tapbacks.customEmoji?.length) {
+    console.log(`  picked by hand: ${A.tapbacks.customEmoji.map((e) => `${e.emoji} ${e.n}`).join(" · ")}`);
+  }
   console.log(`  ratio = given/got. Under 1.00 means they receive more than they give.`);
   // Counted as distinct people, so two-person chats can only score 2, 1 or
   // nothing — no ranking worth printing. See the same rule in the web UI.
@@ -454,6 +458,13 @@ if (A.odds.domains.length) {
 
 console.log(`\n  most-repeated messages:`);
 for (const r of A.odds.repeated) console.log(`    ${padL(r.n.toLocaleString(), 6)}  "${quote(r.text, 60)}"`);
+
+// One-liners on purpose: a handful of bubbles, and voice notes are rare.
+if (A.apps) console.log(`\n  apps: ${A.apps.map((a) => `${a.name} ${a.n.toLocaleString()}`).join(" · ")}`);
+if (A.audio) {
+  console.log(`  voice notes: ${A.audio.n.toLocaleString()} sent, ${A.audio.played.toLocaleString()} played` +
+    (A.audio.n < 20 ? " — too few to read anything into" : ""));
+}
 
 console.log(`\n  first ever   ${day(A.odds.firstMsg.ms)}  ${A.odds.firstMsg.who}: "${quote(A.odds.firstMsg.text, 90)}"`);
 console.log(`  latest       ${day(A.odds.lastMsg.ms)}  ${A.odds.lastMsg.who}: "${quote(A.odds.lastMsg.text, 90)}"`);

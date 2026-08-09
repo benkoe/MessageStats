@@ -400,7 +400,51 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
   const busiest = topN(byDay, 1)[0];
   const spanDays = Math.floor((lastMs - firstMs) / 86_400_000) + 1;
 
+  /**
+   * Conversations with unread messages waiting.
+   *
+   * `chat.last_read_message_timestamp` is how far you got; the newest incoming
+   * message is how far there is to go. Both are nanoseconds since 2001, so the
+   * arithmetic stays in SQLite for the same reason as everything else here.
+   *
+   * Only incoming messages count — your own don't go unread — and a chat with
+   * the column at 0 has no read state to compare, which is different from
+   * being caught up and is left out rather than reported as behind.
+   */
+  const unread = hasColumns(db, "chat", "last_read_message_timestamp")
+    ? db.prepare(
+        `select c.ROWID id, c.display_name dn, c.chat_identifier ci, c.style,
+                count(*) n,
+                max(${SECONDS}) lastSec,
+                (c.last_read_message_timestamp / 1000000000 + ${APPLE_EPOCH}) readSec
+           from chat c
+           join chat_message_join j on j.chat_id = c.ROWID
+           join message m on m.ROWID = j.message_id
+          where c.last_read_message_timestamp > 0
+            and m.is_from_me = 0
+            and m.date > c.last_read_message_timestamp
+            and ${REAL_MESSAGE_WHERE}
+          group by c.ROWID
+          having n > 0
+          order by n desc
+          limit 12`
+      ).all()
+    : [];
+
+  const rostersForUnread = unread.length ? chatRosters(db, canonical) : new Map();
+  const behind = unread.map((r) => {
+    const roster = [...(rostersForUnread.get(r.id) ?? [])].map((h) => names.get(h) ?? h);
+    return {
+      id: r.id,
+      name: r.dn?.trim() || roster.sort().join(", ") || r.ci || `chat ${r.id}`,
+      n: r.n,
+      since: r.readSec * 1000,
+      last: r.lastSec * 1000,
+    };
+  });
+
   return {
+    behind,
     total, sent, received,
     first: firstMs, last: lastMs, spanDays,
     perDay: total / spanDays,
@@ -656,10 +700,15 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   // 2000–2007 add a tapback, 3000–3007 take one back. Reading only the adds
   // counts a reaction somebody removed; ordering by date and keeping the last
   // state per (part, reactor) settles both removals and changes.
+  // The any-emoji reaction (type 2006) keeps the chosen emoji in its own
+  // column, so "emoji 93" can say which ones instead of standing for all of
+  // them. Newer than the rest of this table, hence the guard.
+  const hasEmojiCol = hasColumns(db, "message", "associated_message_emoji");
   const taps = db
     .prepare(
       `select m.guid self, m.associated_message_guid guid,
-              m.associated_message_type amt, m.is_from_me fromMe, h.id handle
+              m.associated_message_type amt, m.is_from_me fromMe, h.id handle,
+              ${hasEmojiCol ? "m.associated_message_emoji" : "null"} emoji
          from message m
          join chat_message_join j on j.message_id = m.ROWID
          left join handle h on h.ROWID = m.handle_id
@@ -688,10 +737,12 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     latest.set(`${label(t.handle, t.fromMe === 1)}|${t.guid ?? ""}`, t);
   }
   const kindsBy = new Map();   // person -> kind -> n, for the per-person mix
+  const customEmoji = new Map();
   for (const t of latest.values()) {
     if (t.amt >= 3000) continue;               // taken back — never happened
     const who = label(t.handle, t.fromMe === 1);
     const kind = TAPBACK_KINDS[t.amt] ?? String(t.amt);
+    if (t.emoji) inc(customEmoji, t.emoji);
     inc(given, who);
     inc(kinds, kind);
     if (!kindsBy.has(who)) kindsBy.set(who, new Map());
@@ -757,6 +808,40 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     const ms = appleMicrosToMs(a.us);
     if (ms) inc(attByYear, new Date(ms).getFullYear());
   }
+
+  /* ---- apps, and voice notes ---- */
+  /**
+   * `balloon_bundle_id` names the extension that drew a bubble. The URL
+   * previewer dominates everywhere and is already covered by the link section,
+   * so it is dropped here — what's left is the long tail: polls, Find My,
+   * Apple Cash, games. A line, not a section.
+   */
+  const apps = hasColumns(db, "message", "balloon_bundle_id")
+    ? db.prepare(
+        `select m.balloon_bundle_id b, count(*) n
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+          where j.chat_id in (${holes}) and m.balloon_bundle_id is not null
+            and m.balloon_bundle_id <> 'com.apple.messages.URLBalloonProvider'
+          group by 1 order by n desc limit 8`
+      ).all(...ids)
+        // com.apple.messages.MSMessageExtensionBalloonPlugin:TEAMID:bundle.id
+        .map((r) => ({ name: String(r.b).split(":").pop().split(".").pop(), n: r.n }))
+    : [];
+
+  /**
+   * Voice notes. Almost nobody sends them — 129 in a 890k-message library — so
+   * this reports counts and never a rate: "0 of 3 played" is a number, not a
+   * fact about whether anyone listens.
+   */
+  const audio = hasColumns(db, "message", "is_audio_message", "is_played")
+    ? db.prepare(
+        `select count(*) n, sum(m.is_played = 1) played
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+          where j.chat_id in (${holes}) and m.is_audio_message = 1`
+      ).get(...ids)
+    : null;
 
   /* ---- what the links actually were ---- */
   /**
@@ -1089,11 +1174,15 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     tapbacks: seenTaps.size === 0 ? null : {
       total: seenTaps.size,
       kinds: topN(kinds, 9).map(([kind, n]) => ({ kind, n, icon: TAPBACK_ICONS[kind] ?? "•" })),
+      // Which emoji people actually picked, rather than "emoji, 93 of them".
+      customEmoji: topN(customEmoji, 10).map(([emoji, n]) => ({ emoji, n })),
       mostReacted: topN(perMsg, 8)
         .map(([g, n]) => ({ n, msg: msgRef(byGuid.get(g)) }))
         .filter((x) => x.msg),
     },
     richLinks,
+    apps: apps.length ? apps : null,
+    audio: audio?.n ? { n: audio.n, played: audio.played ?? 0 } : null,
     services,
     replyGraph,
     groupHistory: history.length || departed.length ? { events: history, departed } : null,

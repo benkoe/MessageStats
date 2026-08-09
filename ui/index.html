@@ -859,7 +859,13 @@ function render(A){
       el("div",{class:"scroll"},tt),
       // Identity is never glyph-alone: the legend spells each one out.
       el("p",{class:"sub tb-key",style:"margin-top:8px"},
-        ...KINDS.map(k=>el("span",{},el("span",{class:"tb-key-i"},k.icon),k.kind)))),
+        ...KINDS.map(k=>el("span",{},el("span",{class:"tb-key-i"},k.icon),k.kind))),
+      // "emoji 93" says nothing; which emoji says a lot.
+      A.tapbacks.customEmoji?.length
+        ? el("div",{style:"margin-top:8px"},
+            el("span",{class:"sub"},"Picked by hand: "),
+            ...A.tapbacks.customEmoji.map(e=>el("span",{class:"chip",style:"font-size:14px"},`${e.emoji} ${N(e.n)}`)))
+        : null),
       "Ratio under 1.00 means they receive more than they give.");
     // Counted as people, so the ceiling is the roster. With two people the
     // ranking is 2, 1 or nothing — there is no story in it, so it is left out.
@@ -1017,6 +1023,13 @@ function render(A){
     A.odds.domains.map(d=>`${d.domain} (${N(d.n)})`).join(" · ")));
   co.append(el("p",{class:"sub"},el("b",{},"Most repeated: "),
     A.odds.repeated.map(r=>`“${r.text}” ×${N(r.n)}`).join(" · ")));
+  // Both of these are one-liners on purpose: the app tail is a handful of
+  // bubbles and voice notes are vanishingly rare, so neither earns a section.
+  if(A.apps) co.append(el("p",{class:"sub"},el("b",{},"Apps: "),
+    A.apps.map(a=>`${a.name} ${N(a.n)}`).join(" · ")));
+  if(A.audio) co.append(el("p",{class:"sub"},el("b",{},"Voice notes: "),
+    `${N(A.audio.n)} sent, ${N(A.audio.played)} played.`,
+    A.audio.n<20?el("span",{}," Too few to read anything into."):null));
   m.append(co);
 
   /* search + assistant */
@@ -1628,6 +1641,14 @@ async function renderOverview(mount,gen){
       el("div",{},O.drifted.map(d=>el("span",{class:"chip"},
         `${d.name} · ${N(d.n)} messages · silent ${Math.round(d.quietDays/30)} months`))),
       "Conversations with real history behind them and nothing for six months or more."));
+  }
+
+  if(O.behind?.length){
+    const rows=O.behind.map(b=>el("tr",{},
+      el("td",{},b.name),el("td",{},N(b.n)),el("td",{},D(b.since)),el("td",{},D(b.last))));
+    box.append(card("Never got back to them",
+      peopleTable(rows,["conversation","unread","read up to","last message"]),
+      "Messages that arrived after the last one you read. The read mark can predate this copy of the database — a pointer that survived a device migration — so \"read up to\" is sometimes older than anything here."));
   }
 }
 
