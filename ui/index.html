@@ -147,6 +147,20 @@ td:first-child{font-weight:550}
   animation:pulse 1.4s ease-in-out infinite;vertical-align:middle}
 @keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.chat.asking .n::after{animation:none;opacity:.8}}
+/* A long ask looks frozen without something moving and a running count. */
+.thinking{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  color:var(--muted);padding:10px 0}
+.spinner{width:13px;height:13px;border-radius:50%;flex:none;
+  border:2px solid var(--ring);border-top-color:var(--s1);
+  animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* Nothing that fires another request stays clickable while one is running —
+   a second ask is charged for, not merely wasted. */
+.card.busy .chip{opacity:.4;pointer-events:none}
+button.act:disabled{opacity:.55;cursor:default}
+@media (prefers-reduced-motion:reduce){
+  .spinner{animation-duration:2.4s}
+}
 .md p{margin:0 0 10px}
 .md h2,.md h3,.md h4{margin:14px 0 6px;font-size:14px}
 .md-list{margin:0 0 10px;padding-left:20px}
@@ -204,7 +218,7 @@ details>summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;padding:5px 0
     <div class="search-box"><input type="search" id="filter" placeholder="Filter conversations…" autocomplete="off"></div>
     <button class="chat navlink" id="ovbtn">
       <div class="t"><span class="n">✨ Everything</span></div>
-      <div class="p">every conversation at once</div>
+      <div class="p">Stats Across all Conversations</div>
     </button>
     <div id="chatlist"></div>
   </aside>
@@ -914,37 +928,6 @@ const mdToText=(s)=>String(s)
   .replace(/^[ \t]*[-*][ \t]+/gm,"• ");
 
 /**
- * RTF, so bold survives into TextEdit, Pages and Word.
- *
- * Escape first, then insert control words — otherwise the backslashes we add
- * get escaped in turn. Anything non-ASCII becomes \uN? because RTF is a
- * 7-bit format and emoji are common in these answers.
- */
-function mdToRtf(text){
-  // \uN is a *signed* 16-bit value in RTF, so anything above 32767 \u2014 which is
-  // every emoji surrogate \u2014 has to be written as its negative counterpart or
-  // readers show garbage. Emoji are common in these answers.
-  const esc=(s)=>s.replace(/[\\{}]/g,m=>"\\"+m)
-                  .replace(/[\u0080-\uFFFF]/g,c=>{
-                    const n=c.charCodeAt(0);
-                    return "\\u"+(n>32767?n-65536:n)+"?";
-                  });
-  const lines=String(text).split("\n").map(line=>{
-    const h=line.match(/^(#{1,6})\s+(.*)$/);
-    let body=h? h[2] : line.replace(/^\s*[-*]\s+/,"• ");
-    body=esc(body)
-      .replace(/\*\*([^*]+)\*\*/g,"{\\b $1}")          // bold before italic —
-      .replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g,"{\\i $1}")  // ** would match *
-      .replace(/`([^`]+)`/g,"{\\f1 $1}");
-    return h ? `\\fs28{\\b ${body}}\\fs24\\par` : `${body}\\par`;
-  });
-  return "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fnil Helvetica;}{\\f1\\fmodern Menlo;}}\\fs24\n"
-    + lines.join("\n") + "\n}";
-}
-
-const EXPORT_AS = { md:(s)=>s, txt:mdToText, rtf:mdToRtf };
-
-/**
  * Save to disk through the server.
  *
  * The obvious approach — a Blob and <a download> — works in a browser and does
@@ -954,13 +937,12 @@ const EXPORT_AS = { md:(s)=>s, txt:mdToText, rtf:mdToRtf };
  * DMG. Writing from the server and revealing the file in Finder gets the same
  * outcome and still updates by git pull.
  */
-async function exportAnswer(r,question,secs,fmt,status){
+async function exportAnswer(r,question,secs,status){
   status.textContent="Saving…";
   try{
-    const ext=EXPORT_AS[fmt]?fmt:"txt";
     const name=`MessageStats — ${(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat"} — ${new Date().toISOString().slice(0,10)}`;
     const res=await fetch("/api/export",{method:"POST",headers:{"content-type":"application/json"},
-      body:JSON.stringify({name,ext,content:EXPORT_AS[ext](answerText(r,question,secs))})}).then(x=>x.json());
+      body:JSON.stringify({name,ext:"txt",content:mdToText(answerText(r,question,secs))})}).then(x=>x.json());
     if(!res.ok) throw new Error(res.error||"could not write the file");
     status.textContent=`Saved to ${res.path} — revealed in Finder.`;
   }catch(e){ status.textContent="Couldn't save: "+e.message; }
@@ -1004,32 +986,51 @@ function askPanel(A){
       if(r.truncated) out.append(el("div",{class:"flag warn"},el("div",{},
         el("b",{},"Cut off. "),"The model hit its length limit before finishing — ask for fewer people at a time, or a shorter format.")));
       const status=el("span",{class:"sub"});
-      const fmt=el("select",{style:"max-width:104px"});
-      for(const [v,l] of [["txt","Text (.txt)"],["rtf","Rich text (.rtf)"],["md","Markdown (.md)"]])
-        fmt.append(el("option",{value:v},l));
-      fmt.value=PREFS.get("exportFmt")||"txt";
-      fmt.addEventListener("change",()=>PREFS.set("exportFmt",fmt.value));
       out.append(el("div",{class:"row",style:"margin-top:10px;align-items:center"},
         el("button",{class:"act",onclick:()=>copyAnswer(r,asked,secs,status)},"Copy"),
-        el("button",{class:"act",onclick:()=>exportAnswer(r,asked,secs,fmt.value,status)},"Export"),
-        fmt, status));
+        el("button",{class:"act",onclick:()=>exportAnswer(r,asked,secs,status)},"Export"),
+        status));
       out.append(el("p",{class:"sub",style:"margin-top:8px"},
         `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"}${secs?" · "+secs+"s":""}`));
+    };
+
+    /* Everything that must not be clickable twice. Driven off the ASKS entry
+       rather than a local flag, so a panel rebuilt mid-request comes back
+       disabled too. */
+    const askBtn = el("button",{class:"act primary",onclick:()=>run()},"Ask");
+    const setBusy = (busy)=>{
+      askBtn.disabled=busy;
+      askBtn.textContent=busy?"Asking…":"Ask";
+      card.classList.toggle("busy",busy);
     };
 
     /* Show whatever state an ask is in. Safe to call on a rebuilt panel: the
        entry outlives the DOM, so returning to a chat picks up where it was. */
     const showEntry = async (entry)=>{
       if(!entry.done){
+        setBusy(true);
         out.innerHTML="";
-        out.append(el("p",{class:"muted"},`Thinking (${cfg.model})… you can look at other conversations while this runs.`));
-        await entry.promise;   // never rejects — the failure is captured below
+        const secs=el("span",{class:"mono"},"0s");
+        out.append(el("div",{class:"thinking"},
+          el("span",{class:"spinner"}),
+          el("span",{},`Thinking — ${cfg.model}`),
+          secs,
+          el("span",{class:"sub"},"you can open other conversations while this runs")));
+        // Tick so it is visibly alive; a long ask otherwise looks frozen.
+        const tick=setInterval(()=>{ secs.textContent=Math.round((Date.now()-entry.t0)/1000)+"s"; },1000);
+        try{ await entry.promise; } finally{ clearInterval(tick); }
       }
+      setBusy(false);
       if(entry.error){ out.innerHTML=""; out.append(el("p",{class:"muted"},"Failed: "+esc(entry.error.message))); return; }
       showAnswer(entry.result,entry.question,entry.secs);
     };
 
     const run = async ()=>{
+      // One ask per conversation at a time. The button is disabled while one is
+      // running, but Enter and the suggestion chips reach here too — and a
+      // second request is charged for, not just wasted.
+      const live=ASKS.get(A.chat.id);
+      if(live && !live.done) return;
       const asked=q.value.trim();
       if(!asked) return;
       const t0=Date.now();
@@ -1053,7 +1054,7 @@ function askPanel(A){
       el("p",{class:"sub"},
         cfg.local ? `Running on ${cfg.label} — nothing leaves this machine.`
                   : `Using ${cfg.label} (${cfg.model}). Statistics are sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`),
-      el("div",{class:"row",style:"margin-bottom:8px"},q,scope,tone,el("button",{class:"act primary",onclick:run},"Ask")),
+      el("div",{class:"row",style:"margin-bottom:8px"},q,scope,tone,askBtn),
       el("div",{style:"margin-bottom:10px"},SUGGESTED.map(s=>
         el("span",{class:"chip",style:"cursor:pointer",onclick:()=>{q.value=s;run();}},s))),
       out);
