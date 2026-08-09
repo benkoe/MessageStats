@@ -83,6 +83,7 @@ const build = {
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
     },
     read: (j) => j.choices?.[0]?.message?.content ?? "",
+    truncated: (j) => j.choices?.[0]?.finish_reason === "length",
   }),
 
   anthropic: (c, { system, user, maxTokens }) => ({
@@ -98,6 +99,7 @@ const build = {
     read: (j) => (j.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join(""),
     // A safety classifier can decline with HTTP 200 — check before reading content.
     refusal: (j) => (j.stop_reason === "refusal" ? (j.stop_details?.explanation || "the model declined this request") : null),
+    truncated: (j) => j.stop_reason === "max_tokens",
   }),
 
   gemini: (c, { system, user, maxTokens }) => ({
@@ -109,6 +111,7 @@ const build = {
       generationConfig: { maxOutputTokens: maxTokens },
     },
     read: (j) => (j.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join(""),
+    truncated: (j) => j.candidates?.[0]?.finishReason === "MAX_TOKENS",
   }),
 };
 
@@ -201,5 +204,8 @@ export async function ask(cfg, { system, user, maxTokens = 2048, logDir, timeout
 
   const out = spec.read(json);
   if (!out) throw new Error(`${cfg.label} returned an empty response`);
-  return out;
+  // An answer that stopped at the token ceiling looks identical to a finished
+  // one — it just ends mid-sentence. Report it rather than letting the caller
+  // present a half answer as the whole answer.
+  return { text: out, truncated: spec.truncated?.(json) === true };
 }

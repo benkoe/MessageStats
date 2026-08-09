@@ -40,6 +40,45 @@ const STOP = new Set(
    "ll re ve").split(/\s+/)
 );
 
+/**
+ * URLs are not vocabulary, and they dominate the word counts if you let them.
+ *
+ * A pasted link contributes its scheme, its host and every path and query
+ * segment as separate "words": `https` was the single most-used token in one
+ * chat (1,658), followed by `youtu`, `www` and `utm`. Worse are the opaque
+ * ids — `igsh`, `igshid` and Instagram's share tokens made a run of random
+ * strings look like somebody's signature vocabulary.
+ *
+ * Bare domains count too: `instagram.com/reel/x` has no scheme, so matching
+ * only `https?://` leaves `com` and the whole path behind.
+ */
+const URL_RE = /\b(?:https?:\/\/|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|gg|tv|me|ly|app|dev|news|uk|edu|gov)\b\S*/gi;
+const EMAIL_RE = /\b[\w.+-]+@[\w-]+\.[\w.]+\b/gi;
+
+/**
+ * Words in one message, with the junk already gone. Both the signature-word
+ * and the picked-up-word passes go through here so they can never disagree.
+ *
+ * Beyond URLs, two shapes are dropped: anything mixing letters and digits
+ * (`b87rfyrs7`, `1uy7ggvdw` — ids, never words) and bare numbers including
+ * ordinals like `2nd` and years like `2024`, which are quantities rather than
+ * vocabulary. Validated against a 154k-message chat: it removes the id soup
+ * while keeping real oddities people actually say — `maye`, `duran`,
+ * `bregman`, `knicks`, `idno`, `crochet` all survive with hundreds of uses.
+ */
+export function words(text) {
+  const clean = text.toLowerCase().replace(URL_RE, " ").replace(EMAIL_RE, " ");
+  const out = [];
+  for (const raw of clean.match(/[\p{L}\p{N}']+/gu) ?? []) {
+    const w = raw.replace(/^'+|'+$/g, "");
+    if (w.length < 3) continue;
+    if (/\d/.test(w) && /\p{L}/u.test(w)) continue;   // id-shaped
+    if (/^\p{N}+$/u.test(w)) continue;                // bare number
+    out.push(w);
+  }
+  return out;
+}
+
 const EMOJI_RE = /(\p{Extended_Pictographic}(\p{Emoji_Modifier}|️)?(‍\p{Extended_Pictographic}(\p{Emoji_Modifier}|️)?)*)/gu;
 const LAUGH = /(\blol\b|\blmao\b|\blmfao\b|\bhaha+\b|\bhehe+\b|\bheh\b|😂|🤣|💀)/i;
 
@@ -595,9 +634,8 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       wordsBy.set(m.who, new Map()); emojiBy.set(m.who, new Map());
       totalWordsBy.set(m.who, 0); firstUse.set(m.who, new Map());
     }
-    for (const raw of m.text.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []) {
-      const w = raw.replace(/^'+|'+$/g, "");
-      if (w.length < 3 || STOP.has(w)) continue;
+    for (const w of words(m.text)) {
+      if (STOP.has(w)) continue;
       inc(wordsBy.get(m.who), w);
       if (!firstUse.get(m.who).has(w)) firstUse.get(m.who).set(w, m.ms);
       totalWordsBy.set(m.who, totalWordsBy.get(m.who) + 1);
@@ -669,7 +707,9 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       try { inc(domains, new URL(url).hostname.replace(/^www\./, "")); } catch { /* ignore */ }
     }
     if (!vocab.has(m.who)) vocab.set(m.who, new Set());
-    for (const w of m.text.toLowerCase().match(/[\p{L}']{3,}/gu) ?? []) vocab.get(m.who).add(w);
+    // Same tokenizer as the word counts — a vocabulary size inflated by link
+    // slugs would make whoever pastes the most URLs look the most articulate.
+    for (const w of words(m.text)) vocab.get(m.who).add(w);
     const key = m.text.trim().toLowerCase();
     if (key.length >= 2 && key.length <= 40) inc(exact, key);
   }

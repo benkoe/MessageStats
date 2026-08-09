@@ -337,7 +337,53 @@ What good looks like:
   attachments, not text; "don" is "don't" losing its apostrophe; URL slugs and tracking
   parameters are not words; in a small group the most-reacted ranking is mostly noise.
 - If the data doesn't support an answer, say so plainly instead of guessing.
-Be specific and be funny where the data is funny. Skip preamble.`;
+Be specific and be funny where the data is funny. Skip preamble.
+
+Answer the whole question. If it asks about the people in the chat, cover every
+one of them rather than the first few — a partial list is a wrong answer.`;
+
+/**
+ * Tone presets. Each is appended to AI_SYSTEM; the grounding rules above always
+ * survive, so no preset can license inventing a number to land a joke.
+ *
+ * "facts" is first because it is the honest default for reading statistics; the
+ * rest exist because the same numbers are much funnier read aloud by someone
+ * with an attitude, which is most of the point of the feature.
+ */
+const TONES = {
+  facts: {
+    label: "Facts only",
+    prompt: "Tone: plain and analytical. No jokes, no editorialising, no nicknames. Report what the numbers show and what it means. Short sentences.",
+  },
+  funny: {
+    label: "Funny",
+    prompt: "Tone: genuinely funny — the comedy comes from the numbers being absurd, not from you announcing that they are. Warm, never punching down. Land a joke per finding and move on.",
+  },
+  roast: {
+    label: "Roasting",
+    prompt: "Tone: roast them. Affectionate but merciless, the way close friends actually talk to each other. Every burn must be anchored to a real statistic — the number is the punchline. These are the user's friends and family, so keep it the kind of thing you'd say to their face.",
+  },
+  mean: {
+    label: "Mean",
+    prompt: "Tone: blunt and unsparing. Say the uncomfortable thing the numbers imply — who has drifted, who talks past everyone, who nobody answers. Stay factual rather than cruel for its own sake, and never comment on anything the statistics don't actually show.",
+  },
+  sarcastic: {
+    label: "Sarcastic",
+    prompt: "Tone: dry and deadpan. Understatement, faint praise, the occasional raised eyebrow. Let the numbers do the damage while you sound unimpressed.",
+  },
+  silly: {
+    label: "Silly",
+    prompt: "Tone: playful and a bit unhinged. Extended metaphors, absurd comparisons, chaotic energy — but the underlying claims still have to be true.",
+  },
+  sportscaster: {
+    label: "Sportscaster",
+    prompt: "Tone: live sports commentary. Treat the chat like a season, the people like players, the stats like a box score. Rankings, records, breakout performances, slumps.",
+  },
+  therapist: {
+    label: "Therapist",
+    prompt: "Tone: gentle and observational, like someone noticing patterns out loud. Curious about what the rhythms suggest, careful not to diagnose. No jargon.",
+  },
+};
 
 /** A compact, quote-light brief. Aggregates first; raw text only where it carries the point. */
 function brief(A, { search } = {}) {
@@ -400,7 +446,7 @@ function brief(A, { search } = {}) {
   return L.join("\n");
 }
 
-async function aiAsk({ chatId, merge, mergeIds, question, searchFor }) {
+async function aiAsk({ chatId, merge, mergeIds, question, searchFor, tone }) {
   const cfg = loadAiConfig(DATA);
   if (cfg.error) throw new Error(cfg.error);
   if (!cfg.configured) throw new Error("The assistant is not configured. Create ai.local.json.");
@@ -409,13 +455,21 @@ async function aiAsk({ chatId, merge, mergeIds, question, searchFor }) {
   // Only run a search when the caller asks for one — it re-reads every message.
   const s = searchFor ? { q: searchFor, ...search(chatId, { q: searchFor, merge, mergeIds, limit: 25 }) } : null;
   const context = brief(A, { search: s });
-  const answer = await llmAsk(cfg, {
-    system: AI_SYSTEM,
+  const preset = TONES[tone] ?? TONES.funny;
+  const { text, truncated } = await llmAsk(cfg, {
+    system: `${AI_SYSTEM}\n\n${preset.prompt}`,
     user: `${context}\n\n---\nQUESTION: ${question}`,
-    maxTokens: 4096,
+    // A question like "assign everyone a character" wants a paragraph per
+    // person, and a big group ran past 4096 and stopped mid-word. The ceiling
+    // is only a cost cap — a cut-off answer costs the same and is worthless.
+    maxTokens: 16384,
     logDir: DATA,
   });
-  return { answer, provider: cfg.label, model: cfg.model, local: cfg.local, contextChars: context.length };
+  return {
+    answer: text, truncated, tone, toneLabel: preset.label,
+    provider: cfg.label, model: cfg.model, local: cfg.local,
+    chat: A.chat.name, contextChars: context.length,
+  };
 }
 
 /* ---------------- http ---------------- */
@@ -461,6 +515,7 @@ const server = createServer((req, res) => {
         ...cfg, key: undefined,   // never echo the key back to the browser
         providers: Object.entries(PROVIDERS).map(([id, v]) =>
           ({ id, label: v.label, local: v.local, needsKey: v.needsKey, hint: v.hint })),
+        tones: Object.entries(TONES).map(([id, t]) => ({ id, label: t.label })),
       });
     }
     // Read a JSON body, then hand it to `fn` which returns a promise.
@@ -514,6 +569,7 @@ const server = createServer((req, res) => {
       return withBody((q) => aiAsk({
         chatId: Number(q.chatId), merge: Boolean(q.merge), mergeIds: q.ids ?? [],
         question: String(q.question ?? "").slice(0, 4000), searchFor: q.search || null,
+        tone: q.tone || null,
       }));
     }
     if (p === "/api/source") {

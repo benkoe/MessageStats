@@ -62,6 +62,13 @@ h1{font-size:26px;letter-spacing:-.02em} h2{font-size:16px} h3{font-size:13px;co
 .brand b{font-size:15px}
 .brand span{font-size:11px;color:var(--muted);cursor:pointer;border-bottom:1px dotted transparent}
 .brand span:hover{color:var(--ink);border-bottom-color:currentColor}
+/* Settings is a tool, not a conversation — it sat in the chat list and read as
+   one. Pushed out to the header so the list below is chats and nothing else. */
+.gear{margin-left:auto;background:none;border:0;cursor:pointer;color:var(--muted);
+  font-size:14px;line-height:1;padding:4px 6px;border-radius:6px;align-self:center}
+.gear:hover{color:var(--ink);background:var(--ring)}
+.gear[aria-current="true"]{color:var(--ink)}
+.gear:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in oklab,var(--s1) 22%,transparent)}
 .search-box{margin:0 12px 10px}
 input,select,button{font:inherit;color:inherit}
 input[type=search],input[type=text],input[type=date],select{
@@ -176,15 +183,12 @@ details>summary{cursor:pointer;color:var(--ink-2);font-size:12.5px;padding:5px 0
 <body>
 <div class="wrap">
   <aside id="side">
-    <div class="brand"><b>MessageStats</b><span id="brand-sub">local only</span></div>
+    <div class="brand"><b>MessageStats</b><span id="brand-sub">local only</span>
+      <button id="setbtn" class="gear" title="Settings" aria-label="Settings">⚙</button></div>
     <div class="search-box"><input type="search" id="filter" placeholder="Filter conversations…" autocomplete="off"></div>
     <button class="chat navlink" id="ovbtn">
       <div class="t"><span class="n">✨ Everything</span></div>
       <div class="p">every conversation at once</div>
-    </button>
-    <button class="chat navlink" id="setbtn">
-      <div class="t"><span class="n">⚙ Settings</span></div>
-      <div class="p">data, reading, assistant</div>
     </button>
     <div id="chatlist"></div>
   </aside>
@@ -333,7 +337,7 @@ const newPage=()=>++PAGE;
 /* Preferences live in the browser, not on disk: they change how this page
    behaves, not what the numbers are. The WKWebView keeps its own localStorage,
    so they persist across launches of the app. */
-const PREF_DEFAULTS = { autoMerge:false };
+const PREF_DEFAULTS = { autoMerge:false, aiTone:"funny" };
 const PREFS = {
   all(){ try { return {...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("messagestats.prefs")||"{}")}; }
          catch { return {...PREF_DEFAULTS}; } },
@@ -795,6 +799,29 @@ function setupForm(cfg){
   return box;
 }
 
+/**
+ * Save an answer as Markdown. Built and downloaded in the page — the server
+ * never sees it, which keeps the "nothing leaves this machine" promise intact
+ * for the export as much as for the analysis.
+ */
+function saveAnswer(r,question,secs){
+  const stamp=new Date().toISOString().slice(0,16).replace("T"," ");
+  const body=[
+    `# ${r.chat}`,``,
+    `**Question:** ${question}`,
+    `**Tone:** ${r.toneLabel}`,
+    `**Model:** ${r.provider} · ${r.model}${r.local?" (local)":""}`,
+    `**Asked:** ${stamp} · ${secs}s`,
+    r.truncated?`\n> Cut off: the model hit its length limit before finishing.`:``,
+    ``,`---`,``,r.answer,``,
+  ].join("\n");
+  const safe=(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat";
+  const url=URL.createObjectURL(new Blob([body],{type:"text/markdown"}));
+  const a=el("a",{href:url,download:`MessageStats — ${safe} — ${stamp.slice(0,10)}.md`});
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
 function askPanel(A){
   const card = el("div",{class:"card"}, el("h2",{},"Ask"));
   const out = el("div",{});
@@ -803,19 +830,30 @@ function askPanel(A){
     if(!cfg.configured){ card.append(setupForm(cfg)); return; }
     const q = el("input",{type:"text",placeholder:"Ask anything about this conversation…"});
     const scope = el("input",{type:"text",placeholder:"optional: also search for a word first"});
+    const tone = el("select",{style:"max-width:170px"});
+    for(const t of (cfg.tones??[])) tone.append(el("option",{value:t.id},t.label));
+    tone.value = PREFS.get("aiTone") || "funny";
+    tone.addEventListener("change",()=>PREFS.set("aiTone",tone.value));
     const run = async ()=>{
       if(!q.value.trim()) return;
       out.innerHTML=""; out.append(el("p",{class:"muted"},`Thinking (${cfg.model})…`));
       const t0=Date.now();
       try{
         const r = await fetch("/api/ai/ask",{method:"POST",headers:{"content-type":"application/json"},
-          body:JSON.stringify({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question:q.value,search:scope.value||null})})
+          body:JSON.stringify({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question:q.value,
+            search:scope.value||null,tone:tone.value})})
           .then(x=>x.json());
         if(r.error) throw new Error(r.error);
         out.innerHTML="";
         out.append(el("div",{class:"m-t",style:"white-space:pre-wrap"},r.answer));
-        out.append(el("p",{class:"sub",style:"margin-top:10px"},
-          `${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"} · ${((Date.now()-t0)/1000).toFixed(1)}s`));
+        // A truncated answer ends mid-sentence and otherwise looks finished.
+        if(r.truncated) out.append(el("div",{class:"flag warn"},el("div",{},
+          el("b",{},"Cut off. "),"The model hit its length limit before finishing — ask for fewer people at a time, or a shorter format.")));
+        const secs=((Date.now()-t0)/1000).toFixed(1);
+        out.append(el("div",{class:"row",style:"margin-top:10px;align-items:center"},
+          el("button",{class:"act",onclick:()=>saveAnswer(r,q.value,secs)},"Export"),
+          el("span",{class:"sub"},
+            `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"} · ${secs}s`)));
       }catch(e){ out.innerHTML=""; out.append(el("p",{class:"muted"},"Failed: "+esc(e.message))); }
     };
     q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
@@ -823,7 +861,7 @@ function askPanel(A){
       el("p",{class:"sub"},
         cfg.local ? `Running on ${cfg.label} — nothing leaves this machine.`
                   : `Using ${cfg.label} (${cfg.model}). Statistics are sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`),
-      el("div",{class:"row",style:"margin-bottom:8px"},q,scope,el("button",{class:"act primary",onclick:run},"Ask")),
+      el("div",{class:"row",style:"margin-bottom:8px"},q,scope,tone,el("button",{class:"act primary",onclick:run},"Ask")),
       el("div",{style:"margin-bottom:10px"},SUGGESTED.map(s=>
         el("span",{class:"chip",style:"cursor:pointer",onclick:()=>{q.value=s;run();}},s))),
       out);
@@ -908,12 +946,15 @@ const msgEl=(m,cls)=>el("div",{class:"msg "+(cls||"")},
 
 /* ---------- settings ---------- */
 async function renderSettings(){
-  const m=$("#main"); m.innerHTML=""; newPage(); resetCards();
+  const m=$("#main"); m.innerHTML=""; const gen=newPage(); resetCards();
   CUR=null;
   for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current","false");
   m.append(el("h1",{},"Settings"));
 
   const st = await api("/api/status").catch(()=>null);
+  // Two renders used to race here and each append its own copy of every card,
+  // so the page came out doubled. Whoever is newest wins; see newPage().
+  if(gen!==PAGE) return;
 
   /* --- data --- */
   const data = card("Your data", null,
@@ -1105,7 +1146,12 @@ async function boot(skipSetup){
 }
 
 $("#ovbtn").addEventListener("click",()=>{ location.hash=""; boot(true); });
-$("#setbtn").addEventListener("click",()=>{ location.hash="settings"; renderSettings(); });
+// Setting the hash fires hashchange, which renders — so only render directly
+// when the hash is already #settings and no event will come. Doing both is
+// what made the page render twice.
+$("#setbtn").addEventListener("click",()=>{
+  if(location.hash==="#settings") renderSettings(); else location.hash="settings";
+});
 // The app's Settings menu item navigates the web view to #settings rather than
 // needing a JavaScript bridge into the sealed Swift binary.
 addEventListener("hashchange",()=>{ if(location.hash==="#settings") renderSettings(); });
