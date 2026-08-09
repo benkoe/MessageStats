@@ -217,6 +217,28 @@ if (A.people.length > 2) {
   console.log(`  (blank = fewer than 5 replies to go on)`);
 }
 
+/* ---------------- group history ---------------- */
+
+if (A.groupHistory) {
+  head("Group history");
+  for (const e of A.groupHistory.events) {
+    const what =
+      e.kind === "renamed" ? `renamed to "${e.title ?? "(no name)"}"`
+      : e.kind === "left"  ? `${e.actor === "Unknown" ? "someone" : e.actor} left`
+      : e.kind === "added" ? `${e.target} joined`
+                           : `${e.target} was removed`;
+    const by = e.kind !== "left" && e.actor && e.actor !== "Unknown" ? `  — by ${e.actor}` : "";
+    console.log(`  ${day(e.ms)}  ${what}${by}`);
+  }
+  if (A.groupHistory.events.length) {
+    console.log(`  (an add and a remove of one person on the same day is usually a handle switch)`);
+  }
+  if (A.groupHistory.departed.length) {
+    console.log(`\n  ${A.groupHistory.departed.join(", ")} — messages here but on no membership list.`);
+    console.log(`  They left; chat_handle_join forgot them while the messages stayed.`);
+  }
+}
+
 /* ---------------- tapbacks ---------------- */
 
 if (A.tapbacks) {

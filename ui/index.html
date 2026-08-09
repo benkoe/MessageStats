@@ -710,6 +710,35 @@ function render(A){
     `Fastest reply: ${(D2.fastest.ms/1000).toFixed(1)}s — ${D2.fastest.reply.who} to ${D2.fastest.to.who}, ${D(D2.fastest.reply.ms)}.`));
   m.append(cd);
 
+  /* group history */
+  if(A.groupHistory){
+    const G=A.groupHistory;
+    const gc=card("Group history",null,
+      "Renames, and who joined or left. These are stored as messages with item_type set — the same rows that would otherwise be counted as things people said.");
+    if(G.events.length){
+      const rows=el("div",{});
+      for(const e of G.events){
+        const what = e.kind==="renamed" ? el("span",{},"renamed to ",el("b",{},e.title||"(no name)"))
+          : e.kind==="left"             ? el("span",{},el("b",{},e.actor==="Unknown"?"someone":e.actor)," left")
+          : e.kind==="added"            ? el("span",{},el("b",{},e.target)," joined")
+                                        : el("span",{},el("b",{},e.target)," was removed");
+        const by = (e.kind!=="left" && e.actor && e.actor!=="Unknown") ? ` — by ${e.actor}` : "";
+        rows.append(el("div",{class:"msg"},
+          el("div",{class:"m-h"},D(e.ms)),
+          el("div",{class:"m-t"},what,by?el("span",{class:"sub"},by):null)));
+      }
+      gc.append(rows);
+      gc.append(el("p",{class:"sub",style:"margin-top:8px"},
+        "Someone added and removed on the same day is usually one person switching handles — a new SIM or an iCloud address — folded under one name by an alias."));
+    }
+    if(G.departed.length){
+      gc.append(el("div",{class:"flag info"},el("div",{},
+        el("b",{},`${G.departed.join(", ")} ${G.departed.length===1?"has":"have"} messages here but ${G.departed.length===1?"is":"are"} on no membership list. `),
+        "They left, so the roster forgot them while their messages stayed. That's normal — and it's why a sender can appear in the numbers below and nowhere in the people list.")));
+    }
+    m.append(gc);
+  }
+
   /* tapbacks */
   if(A.tapbacks){
     /* The kind breakdown used to be a sentence — "loved 9,633 · laughed at

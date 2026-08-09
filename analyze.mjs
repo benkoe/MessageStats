@@ -522,8 +522,71 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     })),
   }));
 
-  /* ---- tapbacks ---- */
   const holes = ids.map(() => "?").join(",");
+
+  /* ---- group history: renames, joins, leaves ---- */
+  /**
+   * These are messages with `item_type <> 0`, which is why a fifth of the
+   * `message` table isn't messages. Three types are confirmed against known
+   * events in a real corpus:
+   *
+   *   item_type 2  — renamed; the new name is in `group_title`
+   *   item_type 1  — roster change; group_action_type 0 added, 1 removed
+   *   item_type 3  — the sender left of their own accord
+   *
+   * `other_handle` is the **handle ROWID** of the person acted on, not a
+   * handle string — joining it as text finds nothing, which is the trap that
+   * makes this look like empty data.
+   *
+   * item_type 4, 5 and 6 also exist (191 rows in that corpus). They carry no
+   * text, no target and no distinguishing column, so they are left out rather
+   * than guessed at.
+   */
+  const events = hasColumns(db, "message", "item_type", "group_action_type", "other_handle")
+    ? db.prepare(
+        `select m.item_type it, m.group_action_type ga, m.group_title title,
+                m.is_from_me fromMe, h.id actor, oh.id target,
+                ${DATE_TO_MICROS.replace("date", "m.date")} us
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+           left join handle h  on h.ROWID = m.handle_id
+           left join handle oh on oh.ROWID = CAST(m.other_handle as INTEGER)
+          where j.chat_id in (${holes}) and m.item_type in (1, 2, 3)
+          order by m.date asc`
+      ).all(...ids)
+    : [];
+
+  const history = [];
+  const seenEvent = new Set();
+  for (const e of events) {
+    const ms = appleMicrosToMs(e.us);
+    const actor = label(e.actor, e.fromMe === 1);
+    const target = e.target ? label(e.target, false) : null;
+    const kind = e.it === 2 ? "renamed" : e.it === 3 ? "left" : e.ga === 1 ? "removed" : "added";
+    if (kind !== "renamed" && !target && kind !== "left") continue;
+    // The same event is often recorded twice; collapse by what it says, to the
+    // day, so a duplicate doesn't read as two separate departures.
+    const key = `${new Date(ms).toISOString().slice(0, 10)}|${kind}|${target ?? e.title ?? ""}`;
+    if (seenEvent.has(key)) continue;
+    seenEvent.add(key);
+    history.push({ ms, kind, actor, target, title: e.title ?? null });
+  }
+
+  /**
+   * People with messages here who are on no current roster — they left, so
+   * `chat_handle_join` forgot them while their messages remain. Without the
+   * history above they are senders who appear on no membership list at all.
+   *
+   * The roster comes from `chatRosters`, not from `chat`, which is the raw row
+   * and carries no membership.
+   */
+  const rosters = chatRosters(db, canonical);
+  const rosterNow = new Set();
+  for (const id of ids) for (const h of rosters.get(id) ?? []) rosterNow.add(names.get(h) ?? h);
+  const me = label(null, true);
+  const departed = people.filter((p) => p !== me && !rosterNow.has(p));
+
+  /* ---- tapbacks ---- */
   // 2000–2007 add a tapback, 3000–3007 take one back. Reading only the adds
   // counts a reaction somebody removed; ordering by date and keeping the last
   // state per (part, reactor) settles both removals and changes.
@@ -833,6 +896,7 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
         .map(([g, n]) => ({ n, msg: msgRef(byGuid.get(g)) }))
         .filter((x) => x.msg),
     },
+    groupHistory: history.length || departed.length ? { events: history, departed } : null,
     signature: { minUses, people: signature },
     pickedUp: pickedUp.length ? { minUses, people: pickedUp } : null,
     attachments: attMedia === 0 && attCards === 0 ? null : {
