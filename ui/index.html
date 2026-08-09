@@ -141,6 +141,12 @@ td:first-child{font-weight:550}
 .chip b{font-weight:600}
 .chip .meta{color:var(--muted);font-size:11px;margin-left:7px;
   padding-left:7px;border-left:1px solid var(--ring)}
+/* A pending ask is visible from any page — you can wander off while it runs. */
+.chat.asking .n::after{content:"";display:inline-block;width:6px;height:6px;
+  margin-left:7px;border-radius:50%;background:var(--s1);
+  animation:pulse 1.4s ease-in-out infinite;vertical-align:middle}
+@keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.chat.asking .n::after{animation:none;opacity:.8}}
 .md p{margin:0 0 10px}
 .md h2,.md h3,.md h4{margin:14px 0 6px;font-size:14px}
 .md-list{margin:0 0 10px;padding-left:20px}
@@ -863,6 +869,26 @@ function setupForm(cfg){
   return box;
 }
 
+/**
+ * Asks that are still running, keyed by chat id.
+ *
+ * Kept here rather than in askPanel's closure because that closure dies the
+ * moment you click another conversation: openChat() empties #main, the panel
+ * is detached, and the answer used to land in a node nobody could see. The
+ * fetch itself was never cancelled — there is no AbortController anywhere —
+ * so the request completed and was billed, and the result was thrown away.
+ *
+ * Holding the promise outside the DOM means a panel rebuilt later can adopt
+ * the same in-flight request instead of starting a second one.
+ */
+const ASKS = new Map();
+
+/** Mark the sidebar row so a pending ask is visible from anywhere. */
+function markAsking(chatId,busy){
+  const row=document.querySelector(`.chat[data-id="${chatId}"]`);
+  if(row) row.classList.toggle("asking",busy);
+}
+
 /** The answer plus the provenance you'd want if you pasted it somewhere. */
 function answerText(r,question,secs){
   const stamp=new Date().toISOString().slice(0,16).replace("T"," ");
@@ -871,11 +897,52 @@ function answerText(r,question,secs){
     `**Question:** ${question}`,
     `**Tone:** ${r.toneLabel}`,
     `**Model:** ${r.provider} · ${r.model}${r.local?" (local)":""}`,
-    `**Asked:** ${stamp} · ${secs}s`,
+    `**Asked:** ${stamp}${secs?` · ${secs}s`:""}`,
     r.truncated?`\n> Cut off: the model hit its length limit before finishing.`:``,
     ``,`---`,``,r.answer,``,
   ].join("\n");
 }
+
+/** Markdown syntax removed, for pasting somewhere that won't render it. */
+const mdToText=(s)=>String(s)
+  .replace(/^#{1,6}\s+/gm,"")
+  .replace(/\*\*([^*]+)\*\*/g,"$1")
+  .replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g,"$1")
+  .replace(/`([^`]+)`/g,"$1")
+  // [ \t]* not \s*: \s matches newlines, so the blank line before a list got
+  // swallowed and paragraphs ran into the bullets.
+  .replace(/^[ \t]*[-*][ \t]+/gm,"• ");
+
+/**
+ * RTF, so bold survives into TextEdit, Pages and Word.
+ *
+ * Escape first, then insert control words — otherwise the backslashes we add
+ * get escaped in turn. Anything non-ASCII becomes \uN? because RTF is a
+ * 7-bit format and emoji are common in these answers.
+ */
+function mdToRtf(text){
+  // \uN is a *signed* 16-bit value in RTF, so anything above 32767 \u2014 which is
+  // every emoji surrogate \u2014 has to be written as its negative counterpart or
+  // readers show garbage. Emoji are common in these answers.
+  const esc=(s)=>s.replace(/[\\{}]/g,m=>"\\"+m)
+                  .replace(/[\u0080-\uFFFF]/g,c=>{
+                    const n=c.charCodeAt(0);
+                    return "\\u"+(n>32767?n-65536:n)+"?";
+                  });
+  const lines=String(text).split("\n").map(line=>{
+    const h=line.match(/^(#{1,6})\s+(.*)$/);
+    let body=h? h[2] : line.replace(/^\s*[-*]\s+/,"• ");
+    body=esc(body)
+      .replace(/\*\*([^*]+)\*\*/g,"{\\b $1}")          // bold before italic —
+      .replace(/(?<![*\w])\*([^*\n]+)\*(?!\*)/g,"{\\i $1}")  // ** would match *
+      .replace(/`([^`]+)`/g,"{\\f1 $1}");
+    return h ? `\\fs28{\\b ${body}}\\fs24\\par` : `${body}\\par`;
+  });
+  return "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fnil Helvetica;}{\\f1\\fmodern Menlo;}}\\fs24\n"
+    + lines.join("\n") + "\n}";
+}
+
+const EXPORT_AS = { md:(s)=>s, txt:mdToText, rtf:mdToRtf };
 
 /**
  * Save to disk through the server.
@@ -887,19 +954,22 @@ function answerText(r,question,secs){
  * DMG. Writing from the server and revealing the file in Finder gets the same
  * outcome and still updates by git pull.
  */
-async function exportAnswer(r,question,secs,status){
+async function exportAnswer(r,question,secs,fmt,status){
   status.textContent="Saving…";
   try{
+    const ext=EXPORT_AS[fmt]?fmt:"txt";
     const name=`MessageStats — ${(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat"} — ${new Date().toISOString().slice(0,10)}`;
     const res=await fetch("/api/export",{method:"POST",headers:{"content-type":"application/json"},
-      body:JSON.stringify({name,content:answerText(r,question,secs)})}).then(x=>x.json());
+      body:JSON.stringify({name,ext,content:EXPORT_AS[ext](answerText(r,question,secs))})}).then(x=>x.json());
     if(!res.ok) throw new Error(res.error||"could not write the file");
     status.textContent=`Saved to ${res.path} — revealed in Finder.`;
   }catch(e){ status.textContent="Couldn't save: "+e.message; }
 }
 
 async function copyAnswer(r,question,secs,status){
-  const text=answerText(r,question,secs);
+  // Plain text on the clipboard: it is going somewhere that probably won't
+  // render Markdown, and stray asterisks are exactly what was complained about.
+  const text=mdToText(answerText(r,question,secs));
   try{
     await navigator.clipboard.writeText(text);
     status.textContent="Copied to the clipboard.";
@@ -925,31 +995,58 @@ function askPanel(A){
     for(const t of (cfg.tones??[])) tone.append(el("option",{value:t.id},t.label));
     tone.value = PREFS.get("aiTone") || "funny";
     tone.addEventListener("change",()=>PREFS.set("aiTone",tone.value));
-    const run = async ()=>{
-      if(!q.value.trim()) return;
-      out.innerHTML=""; out.append(el("p",{class:"muted"},`Thinking (${cfg.model})…`));
-      const t0=Date.now();
-      try{
-        const r = await fetch("/api/ai/ask",{method:"POST",headers:{"content-type":"application/json"},
-          body:JSON.stringify({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question:q.value,
-            search:scope.value||null,tone:tone.value})})
-          .then(x=>x.json());
-        if(r.error) throw new Error(r.error);
+    /* Render a finished answer — used by a fresh ask, an adopted one, and a
+       row picked out of history, so all three look identical. */
+    const showAnswer = (r,asked,secs)=>{
+      out.innerHTML="";
+      out.append(markdown(r.answer));
+      // A truncated answer ends mid-sentence and otherwise looks finished.
+      if(r.truncated) out.append(el("div",{class:"flag warn"},el("div",{},
+        el("b",{},"Cut off. "),"The model hit its length limit before finishing — ask for fewer people at a time, or a shorter format.")));
+      const status=el("span",{class:"sub"});
+      const fmt=el("select",{style:"max-width:104px"});
+      for(const [v,l] of [["txt","Text (.txt)"],["rtf","Rich text (.rtf)"],["md","Markdown (.md)"]])
+        fmt.append(el("option",{value:v},l));
+      fmt.value=PREFS.get("exportFmt")||"txt";
+      fmt.addEventListener("change",()=>PREFS.set("exportFmt",fmt.value));
+      out.append(el("div",{class:"row",style:"margin-top:10px;align-items:center"},
+        el("button",{class:"act",onclick:()=>copyAnswer(r,asked,secs,status)},"Copy"),
+        el("button",{class:"act",onclick:()=>exportAnswer(r,asked,secs,fmt.value,status)},"Export"),
+        fmt, status));
+      out.append(el("p",{class:"sub",style:"margin-top:8px"},
+        `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"}${secs?" · "+secs+"s":""}`));
+    };
+
+    /* Show whatever state an ask is in. Safe to call on a rebuilt panel: the
+       entry outlives the DOM, so returning to a chat picks up where it was. */
+    const showEntry = async (entry)=>{
+      if(!entry.done){
         out.innerHTML="";
-        out.append(markdown(r.answer));
-        // A truncated answer ends mid-sentence and otherwise looks finished.
-        if(r.truncated) out.append(el("div",{class:"flag warn"},el("div",{},
-          el("b",{},"Cut off. "),"The model hit its length limit before finishing — ask for fewer people at a time, or a shorter format.")));
-        const secs=((Date.now()-t0)/1000).toFixed(1);
-        const asked=q.value;
-        const status=el("span",{class:"sub"});
-        out.append(el("div",{class:"row",style:"margin-top:10px;align-items:center"},
-          el("button",{class:"act",onclick:()=>copyAnswer(r,asked,secs,status)},"Copy"),
-          el("button",{class:"act",onclick:()=>exportAnswer(r,asked,secs,status)},"Export"),
-          status));
-        out.append(el("p",{class:"sub",style:"margin-top:8px"},
-          `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"} · ${secs}s`));
-      }catch(e){ out.innerHTML=""; out.append(el("p",{class:"muted"},"Failed: "+esc(e.message))); }
+        out.append(el("p",{class:"muted"},`Thinking (${cfg.model})… you can look at other conversations while this runs.`));
+        await entry.promise;   // never rejects — the failure is captured below
+      }
+      if(entry.error){ out.innerHTML=""; out.append(el("p",{class:"muted"},"Failed: "+esc(entry.error.message))); return; }
+      showAnswer(entry.result,entry.question,entry.secs);
+    };
+
+    const run = async ()=>{
+      const asked=q.value.trim();
+      if(!asked) return;
+      const t0=Date.now();
+      const entry={question:asked,t0,done:false};
+      // The promise is created once and settles into the entry, so it does not
+      // matter how many panels come and go while it is in the air.
+      entry.promise=fetch("/api/ai/ask",{method:"POST",headers:{"content-type":"application/json"},
+        body:JSON.stringify({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question:asked,
+          search:scope.value||null,tone:tone.value})})
+        .then(x=>x.json())
+        .then(r=>{ if(r.error) throw new Error(r.error);
+                   entry.result=r; entry.secs=((Date.now()-t0)/1000).toFixed(1); })
+        .catch(e=>{ entry.error=e; })
+        .finally(()=>{ entry.done=true; markAsking(A.chat.id,false); });
+      ASKS.set(A.chat.id,entry);
+      markAsking(A.chat.id,true);
+      showEntry(entry);
     };
     q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
     card.append(
@@ -960,6 +1057,34 @@ function askPanel(A){
       el("div",{style:"margin-bottom:10px"},SUGGESTED.map(s=>
         el("span",{class:"chip",style:"cursor:pointer",onclick:()=>{q.value=s;run();}},s))),
       out);
+
+    /* Earlier asks for this conversation. Loaded when opened rather than on
+       every chat render — it is a file read nobody needs by default. */
+    const hist=el("details",{style:"margin-top:12px"},el("summary",{},"Earlier asks"));
+    hist.addEventListener("toggle",async ()=>{
+      if(!hist.open || hist.dataset.loaded) return;
+      hist.dataset.loaded="1";
+      const body=el("div",{class:"sub",style:"margin-top:8px"},"Loading…");
+      hist.append(body);
+      try{
+        const h=await api(`/api/ai/history?chatId=${A.chat.id}`);
+        body.innerHTML="";
+        if(!h.entries.length){ body.append(el("span",{},"Nothing yet for this conversation.")); return; }
+        for(const e of h.entries){
+          body.append(el("div",{style:"padding:5px 0;border-bottom:1px solid var(--grid)"},
+            el("a",{href:"#",style:"cursor:pointer",onclick:(ev)=>{
+              ev.preventDefault(); q.value=e.question; showAnswer(e,e.question,null);
+              out.scrollIntoView({block:"nearest"});
+            }},e.question),
+            el("div",{class:"sub"},`${D(Date.parse(e.at))} · ${e.toneLabel??e.tone??"—"} · ${e.model}${e.truncated?" · cut off":""}`)));
+        }
+      }catch(err){ body.innerHTML=""; body.append(el("span",{},"Couldn't read history: "+esc(err.message))); }
+    });
+    card.append(hist);
+
+    // Adopt an ask that was already running (or finished) while you were away.
+    const pending=ASKS.get(A.chat.id);
+    if(pending){ q.value=pending.question; showEntry(pending); }
   }).catch(()=>card.append(el("p",{class:"muted"},"Couldn't read assistant config.")));
   return card;
 }
@@ -1053,7 +1178,7 @@ async function renderSettings(){
 
   /* --- data --- */
   const data = card("Your data", null,
-    "Everything lives in ~/Library/Application Support/MessageStats — outside the app, so updates never touch it.");
+    `Everything lives in ${st?.dirs?.data ?? "~/Library/Application Support/MessageStats"} — outside the app, so updates never touch it.`);
   if(st?.db?.found){
     data.append(el("div",{class:"tiles"},
       tile(`${N(st.db.sizeMB)} MB`,"database", st.db.wal? "WAL present ✓":"no -wal file"),
@@ -1107,10 +1232,40 @@ async function renderSettings(){
     }
   }).catch(()=>ai.append(el("p",{class:"muted"},"Couldn't read the assistant config.")));
 
+  /* --- assistant history --- */
+  const histCard = card("Assistant history", el("p",{class:"muted"},"Loading…"),
+    "Every answer, kept in ai-history.local.json beside your database so you can reread one later. It quotes your conversations, so it never leaves this machine — and you can delete the lot here.");
+  m.append(histCard);
+  api("/api/ai/history").then(h=>{
+    if(gen!==PAGE) return;
+    histCard.querySelector(".muted")?.remove();
+    if(!h.total){ histCard.append(el("p",{class:"sub"},"Nothing saved yet.")); return; }
+    const list=el("div",{class:"sub"});
+    for(const e of h.entries.slice(0,12)){
+      list.append(el("div",{style:"padding:4px 0;border-bottom:1px solid var(--grid)"},
+        el("b",{},e.chat||"—"),` — ${e.question}`,
+        el("div",{},`${D(Date.parse(e.at))} · ${e.toneLabel??e.tone??"—"} · ${e.model}`)));
+    }
+    const note=el("span",{class:"sub"});
+    const clear=el("button",{class:"act",onclick:async ()=>{
+      // Deleting someone's saved answers is not undoable — ask once.
+      if(!clear.dataset.armed){ clear.dataset.armed="1"; clear.textContent="Delete all — click again"; return; }
+      clear.disabled=true;
+      try{
+        const r=await fetch("/api/ai/history/clear",{method:"POST"}).then(x=>x.json());
+        if(!r.ok) throw new Error("could not clear it");
+        list.innerHTML=""; note.textContent="Deleted."; clear.textContent="Clear history";
+      }catch(err){ note.textContent="Couldn't clear: "+err.message; clear.disabled=false; }
+    }},"Clear history");
+    histCard.append(
+      el("p",{class:"sub"},`${N(h.total)} saved${h.total>12?" — showing the 12 most recent":""}.`),
+      list, el("div",{class:"row",style:"margin-top:10px;align-items:center"},clear,note));
+  }).catch(()=>{ if(gen===PAGE) histCard.append(el("p",{class:"muted"},"Couldn't read the history.")); });
+
   /* --- about --- */
   m.append(card("About",el("div",{class:"sub"},
-    el("div",{},"Data folder: ",el("code",{},"~/Library/Application Support/MessageStats")),
-    el("div",{style:"margin-top:6px"},"Code folder: ",el("code",{},"~/Library/Application Support/MessageStats/app")),
+    el("div",{},"Data folder: ",el("code",{},st?.dirs?.data ?? "~/Library/Application Support/MessageStats")),
+    el("div",{style:"margin-top:6px"},"Code folder: ",el("code",{},st?.dirs?.code ?? "~/Library/Application Support/MessageStats/app")),
     el("div",{style:"margin-top:6px"},"The app updates itself from the repo every time it launches."))));
 }
 

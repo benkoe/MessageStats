@@ -9,9 +9,11 @@ names.json
 # Local notes: real names, confirmed merges, machine-specific decisions.
 NOTES.local.md
 
-# Assistant config (may hold an API key) and the log of what was sent.
+# Assistant config (may hold an API key), the log of what was sent, and the
+# saved answers — the last one quotes real conversations back at you.
 ai.local.json
 ai-sent.local.jsonl
+ai-history.local.json
 *.local.md
 *.db
 *.db-wal

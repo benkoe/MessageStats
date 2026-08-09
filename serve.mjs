@@ -73,6 +73,9 @@ function status() {
   const out = {
     db: { found: dbFound, path: DB_PATH, wal: existsSync(`${DB_PATH}-wal`) },
     names: { found: existsSync(NAMES_PATH), path: NAMES_PATH, count: 0 },
+    // Reported, not hardcoded in the page: MESSAGESTATS_DATA moves all of this,
+    // and a Settings screen naming the wrong directory is worse than none.
+    dirs: { data: DATA.replace(os.homedir(), "~"), code: HERE.replace(os.homedir(), "~") },
     ready: false,
   };
   if (dbFound) out.db.sizeMB = Math.round(statSync(DB_PATH).size / 1e6);
@@ -446,6 +449,32 @@ function brief(A, { search } = {}) {
   return L.join("\n");
 }
 
+/**
+ * Saved answers, so an ask is recoverable after a reload or a stray click.
+ *
+ * Lives beside the database rather than in browser storage: it quotes real
+ * conversations, so it belongs with the rest of the private data where it can
+ * be read and deleted by hand. Gitignored, and capped so it cannot grow
+ * without bound.
+ */
+const HISTORY_FILE = path.join(DATA, "ai-history.local.json");
+const HISTORY_MAX = 200;
+
+function readHistory() {
+  try {
+    const j = JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
+    return Array.isArray(j) ? j : [];
+  } catch { return []; }               // absent or corrupt is simply "none"
+}
+
+function addHistory(entry) {
+  try {
+    const all = readHistory();
+    all.unshift(entry);
+    writeFileSync(HISTORY_FILE, JSON.stringify(all.slice(0, HISTORY_MAX), null, 2));
+  } catch { /* history must never break an answer */ }
+}
+
 async function aiAsk({ chatId, merge, mergeIds, question, searchFor, tone }) {
   const cfg = loadAiConfig(DATA);
   if (cfg.error) throw new Error(cfg.error);
@@ -465,11 +494,16 @@ async function aiAsk({ chatId, merge, mergeIds, question, searchFor, tone }) {
     maxTokens: 16384,
     logDir: DATA,
   });
-  return {
+  const out = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    at: new Date().toISOString(),
+    chatId, chat: A.chat.name, question,
     answer: text, truncated, tone, toneLabel: preset.label,
     provider: cfg.label, model: cfg.model, local: cfg.local,
-    chat: A.chat.name, contextChars: context.length,
+    contextChars: context.length,
   };
+  addHistory(out);
+  return out;
 }
 
 /* ---------------- http ---------------- */
@@ -611,6 +645,18 @@ const server = createServer((req, res) => {
           send(res, err ? 500 : 200, { ok: !err, output: `${stdout}${stderr}`.trim() });
         });
     }
+    if (p === "/api/ai/history") {
+      const all = readHistory();
+      const forChat = qs.get("chatId");
+      return send(res, 200, {
+        total: all.length,
+        entries: forChat ? all.filter((e) => String(e.chatId) === forChat) : all,
+      });
+    }
+    if (p === "/api/ai/history/clear" && req.method === "POST") {
+      try { if (existsSync(HISTORY_FILE)) unlinkSync(HISTORY_FILE); } catch { /* already gone */ }
+      return send(res, 200, { ok: true });
+    }
     if (p === "/api/export" && req.method === "POST") {
       // The UI runs in a WKWebView with no WKDownloadDelegate, so an <a download>
       // of a Blob is silently dropped — the Export button did nothing at all.
@@ -624,8 +670,11 @@ const server = createServer((req, res) => {
           .replace(/[/\\]/g, " ").replace(/[^\w .,'()—-]/g, "")
           .replace(/^[.\s]+/, "")          // no leading dots — no hidden files
           .trim().slice(0, 80) || "export";
+        // Whitelist, not whatever the caller sends: the extension decides what
+        // double-clicking the file will execute it with.
+        const ext = ["txt", "rtf", "md"].includes(q.ext) ? q.ext : "txt";
         const dir = path.join(os.homedir(), "Downloads");
-        const file = path.join(dir, `${base}.md`);
+        const file = path.join(dir, `${base}.${ext}`);
         writeFileSync(file, String(q.content ?? ""), "utf8");
         await new Promise((ok) => execFile("/usr/bin/open", ["-R", file], () => ok()));
         return { ok: true, path: file.replace(os.homedir(), "~") };
