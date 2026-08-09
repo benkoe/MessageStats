@@ -240,6 +240,14 @@ mutates in place.** Decoding a UTF-16 string therefore corrupted the blob being
 parsed — every later read came back byte-swapped, and the caller's buffer was
 damaged too. `Buffer.from(...)` before swapping.
 
+Fuzzing it found what the ground-truth check could not: **trust nothing in the
+trailer.** A corrupted blob claiming 10^12 objects made `new Array(numObjects)`
+OOM the whole server process, and container lengths have the same exposure —
+every count from the bytes must be validated against the bytes that exist
+before it is believed. The fuzz harness (truncations, byte flips, hostile
+trailers, run under `--max-old-space-size=256`) is worth re-running after any
+parser change alongside the plutil check.
+
 It also settled a claim that had been asserted in a comment: **`plutil -p`
 output is not machine-readable.** It does not escape embedded double quotes, so
 a message containing `"buying"` splits into fragments under any regex, and an
@@ -499,6 +507,27 @@ out of the attachment/edit/read-receipt work:
   generates automatically, not things anyone sent. Counted as files, whoever
   pastes the most links looks like the biggest photographer. Kept out of every
   media total; see `attachmentKind()`.
+- **App bubbles are sessions, not rows — and `REAL_MESSAGE_WHERE` is wrong in
+  both directions for them.** Every poll vote and game move writes another row
+  with the same `balloon_bundle_id` (`associated_message_type` 2/3/4000),
+  chained to the balloon it updates via `associated_message_guid`, and chains
+  are transitive. Counting rows reported one poll as "Polls 5"; filtering to
+  `associated_message_type = 0` dropped polls whose *every* row is an update
+  type. Count chain roots. Also: third-party bundle ids end in a generic
+  segment (`.MessagesExtension`, `.ext`), so "last dotted component" collapsed
+  every third-party app into the same name — and 211 raw rows in one chat were
+  41 actual polls.
+- **`is_played` only exists on received audio.** Your own sends never get a
+  local played mark, so "10 sent, 3 played" implied seven ignored voice notes
+  when every receivable one was played. Split by direction; report played
+  against received only.
+- **Whatever a report card shows, `brief()` must carry.** The assistant answers
+  from `brief()`'s serialization, not from the page — a whole roadmap of new
+  sections (reply graph, group history, links, services, apps, audio, custom
+  emoji) shipped to both frontends and none of it reached the assistant, which
+  then answered questions about numbers on the very page the user was reading
+  from a context that lacked them. When adding a section, teach `brief()` in
+  the same commit.
 - **`other_handle` is a handle ROWID, not a handle string.** It names the
   person a group event acted on, and joining it against `handle.id` as text
   returns nothing at all — which reads as "the column is empty" and is the
