@@ -177,6 +177,55 @@ handle (seconds on a large library) and the app polls 4×/second while waiting.
 Those polls queue behind each other and slow the startup they are measuring.
 The expensive half of `status()` is cached under `invalidate()`.
 
+### Full Disk Access cannot be prompted for — the deep link is the ceiling
+
+Every so often someone asks why the app makes people grant FDA by hand. The
+answer is that **there is no request API for it.** Contacts, Calendar, Photos,
+mic and camera all have `requestAccess`; `kTCCServiceSystemPolicyAllFiles` has
+nothing. No entitlement, no plist key and no amount of signing makes a prompt
+appear. Do not go looking again.
+
+What *is* possible is skipping the navigation. `POST /api/open-privacy` runs
+`open x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`,
+which lands directly on the pane. Steps 2–4 of Option A stay, because TCC is
+evaluated at process launch — the quit-and-reopen is not automatable.
+
+Three things about that endpoint, all deliberate:
+
+- **It goes through the server, not a link.** The UI is a `WKWebView`, which
+  will not follow an `x-apple.systempreferences:` URL unless the Swift binary
+  handles the navigation — and the binary is sealed, so that would mean a new
+  signed and notarized DMG for a one-line feature. Through `serve.mjs` it ships
+  by `git pull` like everything else.
+- **It takes no URL parameter.** Any page in any browser can POST to a loopback
+  server; an endpoint that opens whatever it is handed is a URL launcher for
+  the whole machine. The destination is fixed in the handler and must stay
+  that way.
+- **The written path stays in step 1**, and a failed open points back at it, so
+  the manual route survives if Apple changes the scheme.
+
+Testing it needs care: that panel only renders when the database is *missing*
+(`if(src.readable)` — the else branch), so it is invisible on any machine that
+has already been set up. Run the server with a throwaway `HOME` to force
+`readable:false` and `db.found:false`. This is the same invisibility that let
+the `setupForm()` bug ship; see below.
+
+### The quarantine dialog is not removable, and yours is the good one
+
+"MessageStats is an app downloaded from the Internet" comes from the
+`com.apple.quarantine` xattr the browser sets, **not** from the signature.
+Notarization cannot remove it. What notarization buys is the wording: a
+notarized app gets "Apple checked it for malicious software and none was
+detected" plus an Open button, where an unnotarized one gets a blocking dialog
+with no way through. It appears once per download, not per launch.
+
+The only ways to avoid it are a signed and notarized `.pkg` (Installer-placed
+files are not quarantined, but it needs a separate Developer ID **Installer**
+certificate and replaces drag-to-Applications with an installer walkthrough) or
+the Mac App Store, which is closed to this app because it reads another app's
+data. Verify state with `spctl -a -vvv -t exec` — "accepted, source=Notarized
+Developer ID" means there is nothing left to fix.
+
 ### Never resolve a data path from cwd in a child process
 
 `build-names.mjs` defaulted its output to `path.resolve("names.json")` — cwd
