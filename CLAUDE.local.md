@@ -177,6 +177,25 @@ handle (seconds on a large library) and the app polls 4×/second while waiting.
 Those polls queue behind each other and slow the startup they are measuring.
 The expensive half of `status()` is cached under `invalidate()`.
 
+### Never resolve a data path from cwd in a child process
+
+`build-names.mjs` defaulted its output to `path.resolve("names.json")` — cwd
+relative — while `serve.mjs` spawned it with `cwd: HERE`, the code clone. So
+"Re-import Contacts" wrote a perfectly good 303-name file into
+`…/MessageStats/app/names.json` on every click, while the server read
+`…/MessageStats/names.json` and reported **0 names known**. The button looked
+dead and was in fact working.
+
+Two things made it invisible. The write landed in the one directory `git pull`
+replaces wholesale, so it was also the worst possible place to put user data.
+And `resolveNamesPath()` probes cwd for a legacy `names.json` *before* falling
+back to the data dir, so once a copy existed in the clone it kept winning.
+
+Both halves are needed: the script goes through `resolveNamesPath()`, and the
+child runs with `cwd: dataDir()` so the legacy probe can never point into code.
+Any future child process that touches user data needs the same treatment —
+`HERE` is where the code lives, never where the data lives.
+
 ### `cache-control: no-store` is load-bearing
 
 With no cache headers browsers cache heuristically, so a page replaced by

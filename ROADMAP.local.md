@@ -24,17 +24,11 @@ these are newer still and an older copy will not have them.
 
 ### Where the data actually is
 
-The scripts default to `~/Library/Application Support/MessageStats/`, which on
-this machine holds only the installed `app/` clone. The database is one
-directory over, in **`MessageStats-real/`**. Until that is reconciled, every
-command needs:
-
-```
-export MESSAGESTATS_DATA=~/Library/Application\ Support/MessageStats-real
-```
-
-Reconciling it is a prerequisite for all of the below, and is the one item
-here that is a bug rather than a feature.
+**Resolved 2026-08-09.** There is now exactly one data directory, the default
+`~/Library/Application Support/MessageStats/`, populated through the app's own
+setup flow like any other install. No `MESSAGESTATS_DATA` override is needed
+and none should creep back in — a second directory is what made the counts in
+this document require an override to reproduce in the first place.
 
 ---
 
@@ -243,7 +237,7 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
 
 ## Suggested order
 
-1. Fix the data-directory discrepancy (blocks everything).
+1. ~~Fix the data-directory discrepancy~~ — done 2026-08-09.
 2. Group rename timeline + membership events — Phase 1.1, and it fixes the
    existing ghost-sender gap.
 3. True reply graph — Phase 1.2, highest analytic value per line of SQL.
