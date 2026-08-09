@@ -478,6 +478,19 @@ out of the attachment/edit/read-receipt work:
   generates automatically, not things anyone sent. Counted as files, whoever
   pastes the most links looks like the biggest photographer. Kept out of every
   media total; see `attachmentKind()`.
+- **`other_handle` is a handle ROWID, not a handle string.** It names the
+  person a group event acted on, and joining it against `handle.id` as text
+  returns nothing at all — which reads as "the column is empty" and is the
+  reason group membership looked unrecoverable. `CAST(m.other_handle AS INTEGER)`
+  joined to `handle.ROWID` resolves it. Confirmed semantics: `item_type` 2 is a
+  rename (new name in `group_title`), 1 is a roster change with
+  `group_action_type` 0 = added and 1 = removed, 3 is the sender leaving.
+  Types 4, 5 and 6 exist and remain unidentified.
+- **Group events are often recorded twice**, so collapse by (day, kind, target)
+  before displaying — otherwise one person leaving reads as two departures. And
+  an add plus a remove of the *same* person on the same day is normally a
+  handle switch (new SIM, iCloud address) that the alias map has folded under
+  one name, not somebody being thrown out and readmitted.
 - **A tapback targets a message *part*, not a message.** The part is a prefix
   on `associated_message_guid` — `p:3/<guid>` — and a photo dump is one message
   with many parts. One person hearting fifteen of eighteen photos produced

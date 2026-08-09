@@ -36,33 +36,35 @@ this document require an override to reproduce in the first place.
 
 Cheapest possible work: new columns, existing helpers, no new file formats.
 
-### 1. Group history — renames and membership
+### 1. ~~Group history — renames and membership~~ — DONE 2026-08-09
 
-Events live in `message` with `item_type <> 0` (969 rows total):
+Shipped as the "Group history" card and a matching CLI section. The semantics
+that were open are now settled, **confirmed against known events** (a person
+`NOTES.local.md` records as having left, and a group whose rename date was
+known):
 
 | `item_type` / `group_action_type` | rows | meaning |
 |---|---|---|
-| 2 / 0 | 281 | **rename** — new name in `group_title` |
-| 1 / 1 | 156 | participant change |
-| 1 / 0 | 115 | participant change |
-| 3 / 1 | 130 | participant change |
-| 3 / 0 | 82 | participant change |
-| 4 / 0 | 88 | *unverified* |
-| 6 / 0 | 76 | *unverified* |
-| 5 / 0 | 27 | *unverified* |
+| 2 / 0 | 281 | **renamed** — new name in `group_title` |
+| 1 / 0 | 115 | **added** — target in `other_handle` |
+| 1 / 1 | 156 | **removed** — target in `other_handle` |
+| 3 / * | 221 | **left** — the sender left; `other_handle` is 0 |
+| 4, 5, 6 | 191 | still unidentified — no text, no target, no distinguishing column |
 
-`group_title` is non-null on 288 rows across **67 distinct chats**, so a
-"every name this group has ever had" timeline is real and immediately
-buildable. Renames are the confirmed half; ship that first.
+**The trap that makes this look like empty data: `other_handle` is a handle
+`ROWID`, not a handle string.** Joining it against `handle.id` as text returns
+nothing, and the obvious conclusion is that the column is unpopulated. Cast it
+and join on `handle.ROWID`.
 
-Adds vs. removes across `item_type` 1 and 3 are **not** yet distinguished —
-the `group_action_type` split does not map cleanly onto the two `item_type`
-values, and guessing here produces a confidently wrong roster history. Resolve
-by reading a handful of known events before labelling anything in the UI.
+Two smaller things learned in the build. The same event is often recorded
+twice, so collapse by (day, kind, target) or one departure reads as two. And
+an add plus a remove of the *same* person on the same day is normally one
+person switching handles — a new SIM or an iCloud address — which the alias
+map folds under a single name; the UI says so rather than leaving it eerie.
 
-This also pays down an existing debt: `CLAUDE.md` documents that people who
-left a group keep their messages but vanish from `chat_handle_join`. A
-membership timeline explains those senders instead of leaving them as ghosts.
+This also paid down the debt it was supposed to: people who left keep their
+messages but vanish from `chat_handle_join`, and the card now names them
+explicitly instead of leaving a sender who appears on no membership list.
 
 ### 2. True reply graph — `thread_originator_guid`
 
@@ -227,8 +229,11 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
    characterises it, do not use it for anything. It is the single most
    dangerous column in this document precisely because it looks meaningful and
    resolves cleanly.
-2. **`item_type` 4, 5 and 6** (88 / 27 / 76 rows) — unlabelled above on
-   purpose.
+2. **`item_type` 4, 5 and 6** (88 / 27 / 76 rows) — still unidentified after
+   the Phase 1.1 build. Sampled: no text, `other_handle` almost always 0, no
+   column that separates them. Left out of the group history rather than
+   guessed at. Likely candidates are location sharing and group-photo changes,
+   but nothing in the data confirms it.
 3. **Mentions.** No column holds them. They are presumably attribute ranges
    inside `attributedBody`, which is parsed for text only today. Unverified —
    check before promising an @-mention feature.
@@ -238,9 +243,9 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
 ## Suggested order
 
 1. ~~Fix the data-directory discrepancy~~ — done 2026-08-09.
-2. Group rename timeline + membership events — Phase 1.1, and it fixes the
-   existing ghost-sender gap.
+2. ~~Group rename timeline + membership events~~ — done 2026-08-09.
 3. True reply graph — Phase 1.2, highest analytic value per line of SQL.
+   **Next up.**
 4. Service mix and screenshot/camera split — Phase 1.3–1.4, near-free.
 5. Decide the bplist question, then rich links — Phase 2.6.
 6. Edit history **only after an explicit decision** — Phase 2.7.
