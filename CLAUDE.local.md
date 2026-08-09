@@ -280,6 +280,36 @@ the async renders use. And the click handler only renders directly when the
 hash is already `#settings`; otherwise it sets the hash and lets `hashchange`
 do it. Either alone would have worked; the guard is the one that generalises.
 
+### Naming and merging are UI now — the warnings had no buttons
+
+Two banners told people to go and edit files: "Add them to names.json by hand"
+and "Open one and press Merge". The first asked for a text editor; the second
+pointed at a button that worked but **forgot** — merging was a per-view toggle,
+so the same decision had to be remade every time the conversation was opened,
+and a report read without it is silently missing history.
+
+**Names.** `POST /api/names` takes either `{handle, name}` or
+`{handle, aliasOf}`, and Settings offers both on every unnamed number: a text
+field, and a picker of everyone already known. The two are not interchangeable
+— `name` invents a person, `aliasOf` folds the handle into an existing one —
+and choosing wrong is exactly the split-identity trap in `CLAUDE.md`, one
+person counted twice with half their history each. The UI says so above the
+list rather than leaving it to be discovered.
+
+The writer tolerates both shapes `loadIdentities()` accepts (`{names,aliases}`
+and a bare handle→name map), normalises the handle, and clears the opposite
+entry so naming undoes an alias and vice versa. It rewrites the whole file:
+a few hundred hand-edited entries, where preserving shape beats write speed.
+
+**Merges.** `merges.local.json` in the data directory, chat id → `{merge, ids}`,
+gitignored. Deliberately *not* in `names.json`: that file is identities and is
+hand-edited; this is a machine-written record of decisions about threads. The
+banner now offers "Merge them" and "Merge them — and remember", plus "Forget
+this" once a decision exists. `openChat()` prefers an explicit click, then the
+remembered decision, then the global `autoMerge` preference — and `loadMerges()`
+must resolve **before** `boot()`, or the first conversation of a session
+ignores every decision.
+
 ### The reaction breakdown is a matrix, not a stacked bar
 
 The kinds used to print as a sentence — "loved 9,633 · laughed at 6,689 · …" —
