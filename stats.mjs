@@ -219,6 +219,20 @@ if (A.people.length > 2) {
   console.log(`  (blank = fewer than 5 replies to go on)`);
 }
 
+/* ---------------- how it's sent ---------------- */
+
+if (A.services) {
+  const S = A.services;
+  head("How it's sent");
+  console.log(`  ${S.totals.map((t) => `${t.name} ${t.n.toLocaleString()} (${day(t.first)} → ${day(t.last)})`).join("\n  ")}`);
+  const cols = S.totals.map((t) => t.name);
+  console.log(`\n  ${pad("", 18)}${cols.map((c) => padL(c, 10)).join("")}`);
+  for (const p of S.people) {
+    // Counts, not shares: 0.2% rounds to "0%" and reads as never.
+    console.log(`  ${pad(p.who, 18)}${cols.map((c) => padL(p.mix[c] ? p.mix[c].toLocaleString() : "—", 10)).join("")}`);
+  }
+}
+
 /* ---------------- who answers whom ---------------- */
 
 if (A.replyGraph?.edges.length) {
@@ -343,6 +357,18 @@ if (A.attachments) {
         `  ${pad(p.who, 14)}${padL(p.attachments.toLocaleString(), 8)}${padL(size(p.attachmentBytes), 10)}   ` +
           p.attachmentKinds.map((k) => `${k.kind} ${k.n}`).join(", ")
       );
+    }
+    // Camera roll vs screen capture — same mime type, different filenames.
+    const shooters = P.filter((p) => p.screenshots || p.cameraPhotos || p.screenRecordings);
+    if (shooters.some((p) => p.screenshots || p.screenRecordings)) {
+      console.log(`\n  ${pad("", 18)}${padL("CAMERA", 9)}${padL("SHOTS", 9)}${padL("RECORD", 9)}${padL("SCREEN", 9)}`);
+      for (const p of shooters) {
+        const shot = p.screenshots + p.screenRecordings, tot = shot + p.cameraPhotos;
+        console.log(`  ${pad(p.who, 18)}${padL(p.cameraPhotos.toLocaleString(), 9)}` +
+          `${padL(p.screenshots || "—", 9)}${padL(p.screenRecordings || "—", 9)}` +
+          `${padL(tot ? `${Math.round((shot / tot) * 100)}%` : "—", 9)}`);
+      }
+      console.log(`  from the filename: IMG_… is the camera, Screenshot… the screen, RPReplay… a recording`);
     }
     console.log(`\n  ${A.attachments.total.toLocaleString()} files, ${size(A.attachments.bytes)} in total`);
     const years = Object.entries(A.attachments.byYear);

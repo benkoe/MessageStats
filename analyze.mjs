@@ -724,6 +724,16 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
 
   const attBy = new Map(), attBytesBy = new Map(), attKinds = new Map(), attByYear = new Map();
   const attKindBy = new Map();
+  /**
+   * Camera roll vs screen capture, from the filename.
+   *
+   * A screenshot and a photograph are both `image/*` and indistinguishable by
+   * mime type, but iOS names them differently: `IMG_1234` off the camera,
+   * `Screenshot …` or `Simulator Screen Shot …` off the screen, `RPReplay…`
+   * for a screen recording. It is the difference between someone sending you
+   * their life and someone sending you their phone.
+   */
+  const shotsBy = new Map(), photosBy = new Map(), recordingsBy = new Map();
   const seenAtt = new Set();
   let attMedia = 0, attBytes = 0, attCards = 0;
   for (const a of attRows) {
@@ -739,9 +749,56 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     inc(attBytesBy, who, a.bytes ?? 0);
     if (!attKindBy.has(who)) attKindBy.set(who, new Map());
     inc(attKindBy.get(who), kind);
+    const nm = a.name ?? "";
+    if (/RPReplay|ScreenRecording/i.test(nm)) inc(recordingsBy, who);
+    else if (/screen ?shot/i.test(nm)) inc(shotsBy, who);
+    else if (kind === "photo" && /^(IMG|FullSizeRender|DSC|PXL)/i.test(nm)) inc(photosBy, who);
     const ms = appleMicrosToMs(a.us);
     if (ms) inc(attByYear, new Date(ms).getFullYear());
   }
+
+  /* ---- how it was sent: iMessage, SMS, RCS ---- */
+  /**
+   * `service` is per message, so a green bubble is really "this person was on
+   * Android, or off wifi, when they sent it". Only worth showing when a
+   * conversation actually mixes — an all-iMessage chat learns nothing from a
+   * row of 100%s.
+   */
+  const svcRows = hasColumns(db, "message", "service")
+    ? db.prepare(
+        `select m.service svc, m.is_from_me fromMe, h.id handle, count(*) n,
+                min(${DATE_TO_MICROS.replace("date", "m.date")}) firstUs,
+                max(${DATE_TO_MICROS.replace("date", "m.date")}) lastUs
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+           left join handle h on h.ROWID = m.handle_id
+          where j.chat_id in (${holes}) and ${REAL_MESSAGE_WHERE}
+          group by m.service, m.is_from_me, h.id`
+      ).all(...ids)
+    : [];
+  const svcBy = new Map(), svcTotals = new Map();
+  const svcSpan = new Map();
+  for (const r of svcRows) {
+    const who = label(r.handle, r.fromMe === 1);
+    const svc = r.svc ?? "unknown";
+    if (!svcBy.has(who)) svcBy.set(who, new Map());
+    inc(svcBy.get(who), svc, r.n);
+    inc(svcTotals, svc, r.n);
+    const cur = svcSpan.get(svc) ?? { first: Infinity, last: 0 };
+    svcSpan.set(svc, {
+      first: Math.min(cur.first, appleMicrosToMs(r.firstUs)),
+      last: Math.max(cur.last, appleMicrosToMs(r.lastUs)),
+    });
+  }
+  const services = svcTotals.size > 1 ? {
+    totals: [...svcTotals.entries()].sort((a, b) => b[1] - a[1])
+      .map(([name, n]) => ({ name, n, first: svcSpan.get(name).first, last: svcSpan.get(name).last })),
+    people: people.map((p) => ({
+      who: p,
+      mix: Object.fromEntries(svcBy.get(p) ?? []),
+      n: [...(svcBy.get(p) ?? [])].reduce((s, [, v]) => s + v, 0),
+    })).filter((p) => p.n),
+  } : null;
 
   /* ---- unsent + edited ---- */
   // case-when rather than selecting the timestamps: these are nanosecond
@@ -928,6 +985,9 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       attachments: attBy.get(who) ?? 0,
       attachmentBytes: attBytesBy.get(who) ?? 0,
       attachmentKinds: topN(attKindBy.get(who) ?? new Map(), 6).map(([kind, n]) => ({ kind, n })),
+      screenshots: shotsBy.get(who) ?? 0,
+      cameraPhotos: photosBy.get(who) ?? 0,
+      screenRecordings: recordingsBy.get(who) ?? 0,
       unsent: unsentBy.get(who) ?? 0,
       edited: editedBy.get(who) ?? 0,
       topWords: topN(wordsBy.get(who), top).map(([word, n]) => ({ word, n })),
@@ -961,6 +1021,7 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
         .map(([g, n]) => ({ n, msg: msgRef(byGuid.get(g)) }))
         .filter((x) => x.msg),
     },
+    services,
     replyGraph,
     groupHistory: history.length || departed.length ? { events: history, departed } : null,
     signature: { minUses, people: signature },

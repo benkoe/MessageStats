@@ -710,6 +710,27 @@ function render(A){
     `Fastest reply: ${(D2.fastest.ms/1000).toFixed(1)}s — ${D2.fastest.reply.who} to ${D2.fastest.to.who}, ${D(D2.fastest.reply.ms)}.`));
   m.append(cd);
 
+  /* how it's sent — only when the chat actually mixes services */
+  if(A.services){
+    const S=A.services, cols=S.totals.map(t=>t.name);
+    const st=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),
+      ...cols.map(c=>el("th",{class:"tb-n"},c)))));
+    const sb=el("tbody",{});
+    for(const p of S.people){
+      // Counts, not percentages: a service with 0.2% share rounds to "0%",
+      // which reads as "never" when it actually happened 290 times.
+      sb.append(el("tr",{},
+        el("td",{},el("span",{class:"swatch",style:`background:${color(P.findIndex(x=>x.who===p.who))}`}),p.who),
+        ...cols.map(c=>el("td",{class:"tb-n"},p.mix[c]?N(p.mix[c]):el("span",{class:"muted"},"—")))));
+    }
+    st.append(sb);
+    m.append(card("How it's sent",el("div",{},
+      el("div",{class:"scroll"},st),
+      el("p",{class:"sub",style:"margin-top:8px"},
+        S.totals.map(t=>`${t.name} ${N(t.n)} (${D(t.first)} → ${D(t.last)})`).join(" · "))),
+      "A green bubble means the message went as SMS or RCS rather than iMessage — someone on Android, or off the network at the time."));
+  }
+
   /* who answers whom — the exact graph */
   if(A.replyGraph && A.replyGraph.edges.length){
     const G=A.replyGraph;
@@ -881,6 +902,31 @@ function render(A){
         el("td",{class:"mixcell"},p.attachmentKinds.map(k=>`${k.kind} ${k.n}`).join(", ")))); });
       at.append(atb);
       ca.append(el("div",{class:"scroll"},at));
+
+      /* Camera roll vs screen capture. Both are image/*, so mime type can't
+         tell them apart — the filename can, and the difference is whether
+         someone is sending you their life or their phone. */
+      const shooters=P.filter(p=>p.screenshots||p.cameraPhotos||p.screenRecordings);
+      if(shooters.some(p=>p.screenshots||p.screenRecordings)){
+        ca.append(el("h3",{style:"margin:14px 0 6px"},"Camera or screen"));
+        const ct=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),
+          el("th",{class:"tb-n"},"camera"),el("th",{class:"tb-n"},"screenshots"),
+          el("th",{class:"tb-n"},"recordings"),el("th",{class:"tb-n"},"screen share"))));
+        const ctb=el("tbody",{});
+        for(const p of shooters){
+          const shot=p.screenshots+p.screenRecordings, tot=shot+p.cameraPhotos;
+          ctb.append(el("tr",{},
+            el("td",{},el("span",{class:"swatch",style:`background:${color(P.findIndex(x=>x.who===p.who))}`}),p.who),
+            el("td",{class:"tb-n"},N(p.cameraPhotos)),
+            el("td",{class:"tb-n"},p.screenshots?N(p.screenshots):el("span",{class:"muted"},"—")),
+            el("td",{class:"tb-n"},p.screenRecordings?N(p.screenRecordings):el("span",{class:"muted"},"—")),
+            el("td",{class:"tb-n"},tot?`${Math.round(shot/tot*100)}%`:"—")));
+        }
+        ct.append(ctb);
+        ca.append(el("div",{class:"scroll"},ct));
+        ca.append(el("p",{class:"sub",style:"margin-top:6px"},
+          "From the filename — iOS names camera files IMG_…, captures Screenshot… and recordings RPReplay…. Anything named otherwise (saved, forwarded, or from Android) isn't counted either way."));
+      }
       const yrs=Object.entries(A.attachments.byYear);
       if(yrs.length>1){
         ca.append(el("h3",{style:"margin:14px 0 6px"},"Files per year"));
