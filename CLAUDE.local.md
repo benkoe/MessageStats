@@ -339,6 +339,18 @@ one in the air gets a pulsing dot in the sidebar. Anything else expensive and
 async should be held the same way — the generation guard is right for cheap
 renders, but discarding an answer somebody is paying for is not.
 
+**Disabling the button is not enough.** Enter in the question field and the
+suggestion chips both call `run()` directly, so the guard has to be the first
+line of `run()` itself — `if(live && !live.done) return` against the `ASKS`
+entry — with the disabled button and dimmed chips as the visible half. A
+second ask is *charged for*, not merely wasted, and without the guard three
+impatient clicks sent three requests. Verified by counting requests at the stub:
+three clicks, one request.
+
+A long ask also has to look alive. A line of muted text reads as a hung app
+after twenty seconds; the panel shows a spinner and a seconds counter that
+ticks, plus a note that you can leave the page.
+
 Testing this needs a slow provider you are not paying for. Point a throwaway
 `MESSAGESTATS_DATA` at a directory whose `ai.local.json` uses the `ollama`
 provider with `baseUrl` set to a local stub that sleeps before replying — the
@@ -352,18 +364,19 @@ quotes real conversations, so it belongs with the other private files where it
 can be read and deleted by hand rather than in an opaque browser store that a
 "clear site data" would silently take with it.
 
-### RTF: escape first, and \u is signed
+### Export is plain text, deliberately
 
-Export offers `.txt`, `.rtf` and `.md`. Two things bite in the RTF writer:
-escape `\`, `{` and `}` **before** inserting control words, or the backslashes
-you just added get escaped in turn; and `\uN` is a **signed 16-bit** value, so
-anything above 32767 must be written as `N - 65536`. Every emoji is a surrogate
-pair above that line, and these answers are full of emoji — get it wrong and
-readers show garbage. Validate with `textutil -convert txt -stdout file.rtf`,
-which parses exactly like TextEdit.
+One format, `.txt`, no picker. An RTF writer was built and validated and then
+removed as a choice nobody needed — it is in git history at `aa389f6` if it
+ever comes back. Two things bit while writing it, worth knowing before anyone
+tries again: escape `\`, `{` and `}` **before** inserting control words, or the
+backslashes you just added get escaped in turn; and `\uN` is a **signed 16-bit**
+value, so anything above 32767 must be written as `N - 65536`. Every emoji is a
+surrogate pair above that line. `textutil -convert txt -stdout file.rtf` parses
+exactly like TextEdit and is the way to check.
 
-Also: in the plain-text converter, strip list markers with `[ \t]*`, never
-`\s*` — `\s` matches newlines, so the blank line before a list gets eaten and
+In the plain-text converter, strip list markers with `[ \t]*`, never `\s*` —
+`\s` matches newlines, so the blank line before a list gets eaten and
 paragraphs run into the bullets.
 
 ### Report paths, never hardcode them
