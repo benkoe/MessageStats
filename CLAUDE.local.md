@@ -226,6 +226,27 @@ the Mac App Store, which is closed to this app because it reads another app's
 data. Verify state with `spctl -a -vvv -t exec` — "accepted, source=Notarized
 Developer ID" means there is nothing left to fix.
 
+### bplist.mjs, and why it has its own checker
+
+`bin/check-bplist.mjs` decodes real blobs with both `bplist.mjs` and `plutil`
+and compares. Run it after touching the parser — 1,600 blobs, expect 0
+failures. It exists because a hand-written binary parser that is *nearly* right
+produces plausible text rather than an error, which is the same reason
+`README.md` describes validating the `streamtyped` parser against ground truth.
+
+It earned itself immediately by catching a bug worth remembering:
+**`Buffer.subarray()` returns a view onto the same memory, and `.swap16()`
+mutates in place.** Decoding a UTF-16 string therefore corrupted the blob being
+parsed — every later read came back byte-swapped, and the caller's buffer was
+damaged too. `Buffer.from(...)` before swapping.
+
+It also settled a claim that had been asserted in a comment: **`plutil -p`
+output is not machine-readable.** It does not escape embedded double quotes, so
+a message containing `"buying"` splits into fragments under any regex, and an
+unescaped quote lets a greedy match run past the line end and swallow plutil's
+own layout. The checker compares by *containment*, single-line, for that
+reason — and it is why the parser reads bytes rather than scraping that output.
+
 ### Never resolve a data path from cwd in a child process
 
 `build-names.mjs` defaulted its output to `path.resolve("names.json")` — cwd

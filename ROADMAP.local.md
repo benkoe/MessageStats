@@ -128,22 +128,22 @@ Both items below are stored as `bplist00` inside an `NSKeyedArchiver` graph.
 They are the two highest-value things in the database and they share one
 dependency, so they should be planned together.
 
-### The dependency
+### ~~The dependency~~ — DONE 2026-08-09
 
-Node has no bplist parser and the project is deliberately zero-dependency
-(`lib.mjs` is plain ESM over `node:sqlite`). Two options:
+`bplist.mjs`: the container reader plus the `NSKeyedArchiver` graph walker,
+hand-rolled, no dependencies. `bin/check-bplist.mjs` validates it against
+`plutil` on real blobs from the database — **1,600 checked, 0 failures**. Run
+it after any change.
 
-- **Hand-rolled reader (recommended).** Roughly 200–300 lines for the bplist
-  container, plus a second layer to walk the `$objects`/`$top` graph that
-  `NSKeyedArchiver` wraps everything in. Same class of work as the existing
-  `streamtyped` parser, and `README.md` already documents how to validate a
-  parser of this kind against ground truth — follow that.
-- **Shell out to `plutil`.** Works, but costs a process spawn per blob (19,566
-  for links alone), and its `-p` output is not machine-readable while
-  `-convert json` has to be checked against archiver UIDs and non-UTF8 bytes.
-  Acceptable for one-off ad-hoc queries; wrong for a report path.
+Writing the validator first was worth it twice over. It caught a real bug —
+`Buffer.subarray()` returns a *view*, and `.swap16()` mutates in place, so
+decoding a UTF-16 string silently corrupted the blob being parsed and damaged
+the caller's buffer. And it proved the claim that `plutil -p` output is not
+machine-readable: plutil does **not escape embedded double quotes**, so a
+message containing `"buying"` splits into fragments under any regex. The check
+compares by containment for exactly that reason.
 
-### 6. Rich link metadata — `payload_data`
+### 6. ~~Rich link metadata — `payload_data`~~ — DONE 2026-08-09
 
 19,566 non-null, essentially all from `com.apple.messages.URLBalloonProvider`
 (19,397). **19,212 contain a `title` key.** Decoding one confirmed the object
@@ -166,6 +166,14 @@ and is the only acceptable one.
 Caveat found while sampling: some payloads are placeholders
 (`richLinkIsPlaceholder = true`) with no metadata. The 19,212-with-title figure
 is the honest denominator; do not report link titles as a share of all links.
+
+**Shipped** as "What the links were": top sites, the most recent titles with
+who sent them, and links sent more than once. In one chat, 5,278 of 5,330
+previews kept their metadata. Two things learned in the build — the URL sits
+under the dotted key `URL["NS.relative"]`, not a nested object; and social
+cards embed their own layout in the title (`Name (@handle)\n3K likes · 26
+replies`), so whitespace has to be collapsed before anything renders on one
+line. Parsing ~5,300 archives adds about a second to a 153k-message chat.
 
 ### 7. Edit history — `message_summary_info`
 
@@ -256,5 +264,8 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
 4. ~~Service mix and screenshot/camera split~~ — done 2026-08-09.
    **Phase 1 is complete**, apart from the deliberately-skipped expressive
    effects (401 rows, footnote-scale).
-5. Decide the bplist question, then rich links — Phase 2.6. **Next up.**
-6. Edit history **only after an explicit decision** — Phase 2.7.
+5. ~~The bplist reader, then rich links~~ — done 2026-08-09.
+6. Edit history **only after an explicit decision** — Phase 2.7. The parser it
+   needed now exists, so this is the only thing standing between the code and
+   the most sensitive data in the database. Deliberately not built. **Next
+   would be Phase 3**, or nothing at all.
