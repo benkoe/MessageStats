@@ -422,6 +422,22 @@ out of the attachment/edit/read-receipt work:
   generates automatically, not things anyone sent. Counted as files, whoever
   pastes the most links looks like the biggest photographer. Kept out of every
   media total; see `attachmentKind()`.
+- **A tapback targets a message *part*, not a message.** The part is a prefix
+  on `associated_message_guid` — `p:3/<guid>` — and a photo dump is one message
+  with many parts. One person hearting fifteen of eighteen photos produced
+  "15×" on a single message in a **two-person** chat, which reads as a data
+  bug and is not one. Count **distinct reactors per message**, so the ceiling
+  is the roster; the raw row count is a photo count wearing a reaction's
+  clothes. Two consequences: the most-reacted ranking is worth nothing in a
+  1:1 chat (max 2, usually 1) and is left out there, and those messages have no
+  text — they rendered as blank rows until they were labelled as attachments.
+- **Tapbacks can be taken back.** 2000–2007 add, 3000–3007 remove. Reading only
+  the adds counts reactions that were removed. Order by date and keep the last
+  state per (part, reactor). In one 154k-message chat this was 28 rows out of
+  28,738 — worth doing for correctness, but it is *not* the explanation for
+  inflated counts, and only 1 pair in 28,737 had a changed reaction. Measure
+  before believing a theory about which of the two is happening.
+
 - **`date_retracted` may be 0 for an entire library** while `date_edited` is
   well populated. Report the absence rather than an empty column.
 - **`date_read` only exists when the reader has receipts on.** One corpus had
