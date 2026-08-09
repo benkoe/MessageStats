@@ -202,24 +202,29 @@ becomes a section. Worth an explicit decision from you rather than a default.
 
 ---
 
-## Phase 3 — real but marginal
+## Phase 3 — ~~real but marginal~~ — DONE 2026-08-09
 
-- **`chat.last_read_message_timestamp`** — populated for 1,513 of 1,855 chats.
-  Supports a library-wide "which conversations am I ignoring" view, which is
-  one of the few things here that works across the whole corpus rather than
-  per-chat.
-- **App/balloon mix** (`balloon_bundle_id`) — dominated by the URL provider
-  (19,397). The tail is genuinely small: a third-party poll extension 215,
-  Find My 47, Apple's Polls 37, Photos 29, Apple Cash 11, then single digits
-  for payments, games and maps. Worth one line, not a section.
-- **Recoverable (recently deleted)** — `chat_recoverable_message_join` has 91
-  rows, `recoverable_message_part` has 1. Present, tiny, and arguably in the
-  same sensitivity class as edit history. Low priority on both counts.
-- **Audio messages** — 129 total, 78 played. This is exactly the situation
-  `MIN_READ_SAMPLE` exists for: report the absence, never a median.
-- **`associated_message_emoji`** — 3,291 rows. Custom-emoji tapbacks are
-  invisible to the current 2000–2007 tapback logic; worth folding in when
-  tapbacks are next touched.
+- **`chat.last_read_message_timestamp`** → "Never got back to them" on the
+  overview. Incoming messages newer than the read mark, per conversation.
+  Two things to know: the column is **nanoseconds since 2001** like
+  `message.date`, so the arithmetic stays in SQLite; and the read mark can
+  **predate this copy of the database** — pointers that survived a device
+  migration show "read up to 2019" against a corpus that starts in 2022. The
+  card says so rather than looking broken. Chats with the column at 0 have no
+  read state and are left out, which is not the same as being caught up.
+- **App/balloon mix** (`balloon_bundle_id`) → one line in Odds and ends, with
+  the URL provider excluded because the link section already covers it. The
+  bundle id is `…MSMessageExtensionBalloonPlugin:TEAMID:com.vendor.app`, so
+  the readable name is the last dotted component of the last colon-separated
+  field.
+- **Audio messages** → one line, counts only, with "too few to read anything
+  into" under 20. One chat had exactly one voice note, sent and played.
+- **`associated_message_emoji`** → folded into the tapback card as "picked by
+  hand". It turns "emoji 93" into 👀 15 · 🔥 14 · 🤮 11, which is the whole
+  point of the column.
+- **Recoverable (recently deleted)** — deliberately **not built**. 91 rows, and
+  in the same sensitivity class as edit history, which was declined. Two
+  reasons to leave it, either sufficient.
 
 ---
 
@@ -265,7 +270,16 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
    **Phase 1 is complete**, apart from the deliberately-skipped expressive
    effects (401 rows, footnote-scale).
 5. ~~The bplist reader, then rich links~~ — done 2026-08-09.
-6. Edit history **only after an explicit decision** — Phase 2.7. The parser it
-   needed now exists, so this is the only thing standing between the code and
-   the most sensitive data in the database. Deliberately not built. **Next
-   would be Phase 3**, or nothing at all.
+6. ~~Phase 3~~ — done 2026-08-09.
+
+**Everything in this document is now built or deliberately declined.** The two
+declined items are edit history (Phase 2.7) and recoverable deleted messages —
+both reconstruct what people wrote and then chose to unsay. The parser they
+would need exists; the decision not to is the only thing keeping them out, and
+it was made on purpose rather than by omission.
+
+What's left is genuinely open ground rather than a backlog: the ideas in
+`README.md` that were never specified (sentiment over time, who introduces
+topics that catch on, message-length drift), the unidentified `item_type`
+4/5/6, and whether mentions can be recovered from `attributedBody` attribute
+ranges.
