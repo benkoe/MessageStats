@@ -545,7 +545,11 @@ const server = createServer((req, res) => {
     }
 
     if (p === "/api/build-names" && req.method === "POST") {
-      return execFile(process.execPath, [path.join(HERE, "build-names.mjs"), "--write"], { cwd: HERE },
+      // cwd is the data directory, not HERE: resolveNamesPath() probes cwd for
+      // a legacy names.json before falling back to the data dir, so running the
+      // child inside the clone made that probe find — and keep rewriting — a
+      // copy in code that git pull replaces wholesale.
+      return execFile(process.execPath, [path.join(HERE, "build-names.mjs"), "--write"], { cwd: dataDir() },
         (err, stdout, stderr) => {
           invalidate();
           send(res, err ? 500 : 200, { ok: !err, output: `${stdout}${stderr}`.trim() });

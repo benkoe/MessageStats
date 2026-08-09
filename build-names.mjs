@@ -31,12 +31,17 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  arg, flag, normalizeHandle, openDb, pad, padL, resolveDbPath,
+  arg, flag, normalizeHandle, openDb, pad, padL, resolveDbPath, resolveNamesPath,
 } from "./lib.mjs";
 
 const argv = process.argv.slice(2);
 const write = flag(argv, "write");
-const namesFile = path.resolve(arg(argv, "names") ?? "names.json");
+// Must go through resolveNamesPath — a bare path.resolve("names.json") is
+// relative to cwd, and the app runs this with cwd set to the code clone. That
+// wrote names.json *inside* the clone while the server read it from the data
+// directory, so every import silently landed somewhere nothing would ever
+// read, and the UI kept reporting 0 names known.
+const namesFile = resolveNamesPath(argv);
 const onlyChat = Number(arg(argv, "chat") ?? 0);
 const allChats = flag(argv, "all-chats") || !onlyChat;
 
