@@ -66,16 +66,26 @@ This also paid down the debt it was supposed to: people who left keep their
 messages but vanish from `chat_handle_join`, and the card now names them
 explicitly instead of leaving a sender who appears on no membership list.
 
-### 2. True reply graph — `thread_originator_guid`
+### 2. ~~True reply graph — `thread_originator_guid`~~ — DONE 2026-08-09
 
-39,827 non-null, of which **39,774 (99.87%) resolve** to a real `message.guid`.
-This is the genuine inline-reply edge.
+Shipped as the "Who replies to whom" card and CLI section: a people × people
+matrix of who answers whom, with the median lag per edge, plus **gave** and
+**got** columns. The gap between those two is the interesting part — in one
+group chat the quietest replier draws 2,251 answers while giving 801, and the
+most prolific replier gives 2,118 and draws half that.
 
-`analyze.mjs:437` currently infers replies from time adjacency, which conflates
-"answered you" with "happened to speak next". Keep the adjacency metric — it is
-the only thing available for the other 95% of messages — but add the exact
-graph beside it and label the two differently. They answer different questions
-and silently merging them would make both untrustworthy.
+Coverage is 2–9% per conversation (4.3% and 9.4% in the two largest), which is
+thousands of edges and plenty — but the card **states its own coverage** rather
+than letting a ranking built from 4% of messages read as the whole story.
+
+Both metrics are kept, and renamed so they can't be confused: the adjacency
+one is now "How fast people answer (inferred)" and says it assumes whoever
+spoke next was answering; this one says it is exact. They had nearly identical
+titles at first, which is worse than having only one.
+
+Unlike `associated_message_guid`, this guid carries **no part prefix** — the
+part is in `thread_originator_part`, which nothing needs. Self-replies are
+dropped from the graph; answering yourself is not a relationship.
 
 ### 3. Service mix
 
@@ -244,8 +254,8 @@ Measured as empty or useless in this corpus. Recorded so nobody re-investigates:
 
 1. ~~Fix the data-directory discrepancy~~ — done 2026-08-09.
 2. ~~Group rename timeline + membership events~~ — done 2026-08-09.
-3. True reply graph — Phase 1.2, highest analytic value per line of SQL.
-   **Next up.**
+3. ~~True reply graph~~ — done 2026-08-09.
 4. Service mix and screenshot/camera split — Phase 1.3–1.4, near-free.
+   **Next up.**
 5. Decide the bplist question, then rich links — Phase 2.6.
 6. Edit history **only after an explicit decision** — Phase 2.7.

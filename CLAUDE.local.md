@@ -486,6 +486,14 @@ out of the attachment/edit/read-receipt work:
   rename (new name in `group_title`), 1 is a roster change with
   `group_action_type` 0 = added and 1 = removed, 3 is the sender leaving.
   Types 4, 5 and 6 exist and remain unidentified.
+- **Two reply metrics, kept apart on purpose.** Adjacency ("whoever spoke next
+  was answering") covers every message and is a guess; `thread_originator_guid`
+  covers 2–9% of a conversation and is a fact. Blending them would make both
+  untrustworthy, so they are separate sections with the inferred one saying so
+  in its title. They shipped with nearly identical names at first — "Who
+  answers whom fastest" beside "Who answers whom" — which is worse than having
+  only one; if two sections measure the same thing differently, the difference
+  belongs in the heading.
 - **Group events are often recorded twice**, so collapse by (day, kind, target)
   before displaying — otherwise one person leaving reads as two departures. And
   an add plus a remove of the *same* person on the same day is normally a
