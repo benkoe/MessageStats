@@ -250,23 +250,80 @@ never reaches an install.
 That is why the rule at the top exists: the branch stops it being *pulled*, not
 being *found*. Anything identifying must simply not be written here.
 
-**Restore onto a new machine:**
+The branch now holds more than one file — `ROADMAP.local.md` too — so both
+recipes below are written to handle **every** file on it. Read the warning
+after them before changing either one.
+
+**Restore onto a new machine** — pulls back everything, not just this file:
 
 ```
 git fetch origin docs
-git show origin/docs:CLAUDE.local.md > CLAUDE.local.md
+for f in $(git ls-tree -r --name-only origin/docs); do
+  git show "origin/docs:$f" > "$f"
+done
 ```
 
 **Back up after editing** — updates the branch without touching your checkout:
 
 ```
-BLOB=$(git hash-object -w CLAUDE.local.md)
-TREE=$(printf '100644 blob %s\tCLAUDE.local.md\n' "$BLOB" | git mktree)
-PARENT=$(git rev-parse -q --verify origin/docs)
-COMMIT=$(git commit-tree "$TREE" ${PARENT:+-p "$PARENT"} -m "Update build notes")
-git push origin "$COMMIT:refs/heads/docs"
+git fetch origin docs
+
+FILES=(CLAUDE.local.md ROADMAP.local.md)   # explicit list — never a glob, see below
+
+(
+  GIT_INDEX_FILE=$(mktemp -t docsidx); export GIT_INDEX_FILE
+  git read-tree origin/docs                # start from what is already on the branch
+  for f in "${FILES[@]}"; do
+    git update-index --add --cacheinfo "100644,$(git hash-object -w "$f"),$f"
+  done
+  TREE=$(git write-tree)
+  PARENT=$(git rev-parse -q --verify origin/docs)
+  if [ -n "$PARENT" ]; then
+    COMMIT=$(git commit-tree "$TREE" -p "$PARENT" -m "Update local docs")
+  else
+    COMMIT=$(git commit-tree "$TREE" -m "Update local docs")
+  fi
+  git push origin "${COMMIT}:refs/heads/docs"
+  rm -f "$GIT_INDEX_FILE"
+)
 ```
 
 Plumbing rather than `git checkout docs` so the working tree stays on `main` —
 switching branches mid-session is how you end up committing notes to `main` by
-accident.
+accident. The subshell plus `GIT_INDEX_FILE` keeps all of it out of your real
+index, so a half-finished backup can never turn into a staged change on `main`.
+
+### Two ways this recipe used to bite
+
+**It built the tree from scratch.** The original was a single `printf` piped
+into `git mktree`, which produces a tree containing exactly the files you
+listed — so the moment a second file existed, running it silently **deleted**
+the other one from the branch. `git read-tree origin/docs` seeds the index from
+what is already there, so the loop only ever adds or replaces. Nothing on the
+branch can be dropped by forgetting to mention it.
+
+**Do not turn `$FILES` into `*.local.md`.** It is tempting and it is wrong:
+`NOTES.local.md` matches that glob, and it holds real names, real handles and
+confirmed-identity notes. This branch is public. `NOTES.local.md` lives beside
+the database in `~/Library/Application Support/`, not in the repo, and it must
+stay off this branch permanently — an explicit list is what guarantees that a
+stray copy in the repo root never gets published by accident.
+
+### The shell here is zsh, and it breaks two idioms this recipe needs
+
+Both of these fail *silently or confusingly* rather than obviously, and both
+were hit while writing the version above.
+
+- **`"$COMMIT:refs/heads/docs"` does not do what it says.** zsh reads the `:r`
+  as a [history modifier](https://zsh.sourceforge.io/Doc/Release/Expansion.html)
+  applied to `$COMMIT`, eats it, and pushes to `efs/heads/docs`. The error is
+  `src refspec … does not match any`, which points nowhere near the cause.
+  **Always brace it: `"${COMMIT}:refs/heads/docs"`.**
+- **`for f in $FILES` does not split on spaces.** zsh does not word-split
+  unquoted parameters, so a space-separated string arrives as one filename and
+  `git hash-object` reports `could not open 'a.md b.md'`. Use a real array —
+  `FILES=(…)` with `"${FILES[@]}"` — which behaves identically in bash and zsh.
+
+The same non-splitting rule is why `${PARENT:+-p "$PARENT"}` is written out as
+an `if` above: in zsh that expansion yields the single argument `-p <sha>`
+rather than two, and `git commit-tree` rejects it.
