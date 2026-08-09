@@ -611,6 +611,26 @@ const server = createServer((req, res) => {
           send(res, err ? 500 : 200, { ok: !err, output: `${stdout}${stderr}`.trim() });
         });
     }
+    if (p === "/api/export" && req.method === "POST") {
+      // The UI runs in a WKWebView with no WKDownloadDelegate, so an <a download>
+      // of a Blob is silently dropped — the Export button did nothing at all.
+      // A real save dialog would need NSSavePanel in the sealed binary, i.e. a
+      // new signed DMG, so the server writes the file and reveals it instead.
+      return withBody(async (q) => {
+        // The name is ours to decide, not the caller's: basename only, no
+        // separators, no traversal, and always .md. This endpoint writes to
+        // disk and any page can POST to a loopback server.
+        const base = String(q.name ?? "export")
+          .replace(/[/\\]/g, " ").replace(/[^\w .,'()—-]/g, "")
+          .replace(/^[.\s]+/, "")          // no leading dots — no hidden files
+          .trim().slice(0, 80) || "export";
+        const dir = path.join(os.homedir(), "Downloads");
+        const file = path.join(dir, `${base}.md`);
+        writeFileSync(file, String(q.content ?? ""), "utf8");
+        await new Promise((ok) => execFile("/usr/bin/open", ["-R", file], () => ok()));
+        return { ok: true, path: file.replace(os.homedir(), "~") };
+      });
+    }
     if (p === "/api/open-privacy" && req.method === "POST") {
       // Full Disk Access is the one permission with no request API — nothing
       // can make the prompt appear, so the best available is jumping straight

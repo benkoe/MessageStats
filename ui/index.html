@@ -136,6 +136,16 @@ td:first-child{font-weight:550}
   background:color-mix(in oklab,var(--accent,var(--s1)) 9%,var(--surface));
   font-size:12px;margin:0 5px 6px 0;transition:transform .12s ease}
 .chip:hover{transform:translateY(-1px)}
+/* The word is the point; the counts are footnotes. Run together at one weight
+   they read as a single unparseable string ("giannas 55× only them"). */
+.chip b{font-weight:600}
+.chip .meta{color:var(--muted);font-size:11px;margin-left:7px;
+  padding-left:7px;border-left:1px solid var(--ring)}
+.md p{margin:0 0 10px}
+.md h2,.md h3,.md h4{margin:14px 0 6px;font-size:14px}
+.md-list{margin:0 0 10px;padding-left:20px}
+.md-list li{margin:3px 0}
+.md code{background:var(--page);border:1px solid var(--ring);border-radius:4px;padding:1px 5px;font-size:12px}
 .msg{padding:6px 0;border-bottom:1px solid var(--grid)}
 .msg .m-h{font-size:11.5px;color:var(--muted)}
 .msg .m-t{white-space:pre-wrap;word-break:break-word}
@@ -204,6 +214,53 @@ const el = (t,a={},...k)=>{const n=document.createElement(t);
   for(const c of k.flat()) if(c!=null) n.append(c.nodeType?c:document.createTextNode(c));
   return n;};
 const api = async (u)=>{const r=await fetch(u); if(!r.ok) throw new Error((await r.json()).error||r.status); return r.json();};
+
+/** A word chip: the term itself, then its counts set back as a footnote. */
+const chip = (word,meta)=>el("span",{class:"chip"},el("b",{},word),el("span",{class:"meta"},meta));
+
+/**
+ * Just enough Markdown for an assistant answer, built as DOM nodes rather than
+ * innerHTML — the text comes from a model and must never be able to inject.
+ *
+ * Models emit **bold** whether or not you ask them to, and printing it raw
+ * left asterisks all over the answer. Handles headings, bullet and numbered
+ * lists, bold, italic and `code`; anything else stays literal.
+ */
+function mdInline(s){
+  const out=[]; const re=/(\*\*[^*]+\*\*|`[^`]+`|(?<![*\w])\*[^*\n]+\*(?!\*))/g;
+  let last=0,m;
+  while((m=re.exec(s))){
+    if(m.index>last) out.push(s.slice(last,m.index));
+    const t=m[0];
+    if(t.startsWith("**")) out.push(el("b",{},t.slice(2,-2)));
+    else if(t.startsWith("`")) out.push(el("code",{},t.slice(1,-1)));
+    else out.push(el("i",{},t.slice(1,-1)));
+    last=m.index+t.length;
+  }
+  if(last<s.length) out.push(s.slice(last));
+  return out;
+}
+function markdown(text){
+  const box=el("div",{class:"md"});
+  let list=null;
+  const endList=()=>{ list=null; };
+  for(const raw of String(text).split("\n")){
+    const line=raw.trimEnd();
+    if(!line.trim()){ endList(); continue; }
+    const h=line.match(/^(#{1,4})\s+(.*)$/);
+    if(h){ endList(); box.append(el(`h${Math.min(4,h[1].length+1)}`,{},...mdInline(h[2]))); continue; }
+    const b=line.match(/^\s*[-*]\s+(.*)$/), n=line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if(b||n){
+      const tag=b?"ul":"ol";
+      if(!list||list.tagName.toLowerCase()!==tag){ list=el(tag,{class:"md-list"}); box.append(list); }
+      list.append(el("li",{},...mdInline((b??n)[1])));
+      continue;
+    }
+    endList();
+    box.append(el("p",{},...mdInline(line)));
+  }
+  return box;
+}
 const N = n=>(n??0).toLocaleString();
 const pct = (a,b)=> b? (a/b*100).toFixed(1)+"%" : "—";
 const D = ms => new Date(ms).toISOString().slice(0,10);
@@ -604,10 +661,17 @@ function render(A){
   /* words */
   const cw=card("Signature words",el("p",{class:"sub"},
     `Said far more than everyone else does — min ${A.signature.minUses} uses. This is the section that actually characterises people.`));
+  cw.append(el("p",{class:"sub"},
+    "Each chip is the word, then how many times they said it, then how much more often than everyone else combined — so ",
+    el("b",{},"14× more"),
+    " means they use it fourteen times as often as the rest of the group put together. ",
+    el("b",{},"nobody else"),
+    " means no one else in the conversation has ever said it."));
   for(const s of A.signature.people){
     const i=P.findIndex(p=>p.who===s.who);
     cw.append(el("h3",{style:"margin:10px 0 4px"},el("span",{class:"swatch",style:`background:${color(i)}`}),s.who));
-    cw.append(el("div",{},s.words.map(w=>el("span",{class:"chip"},`${w.word} ${w.n}× ${w.ratio==null?"only them":w.ratio.toFixed(1)+"x"}`))));
+    cw.append(el("div",{},s.words.map(w=>chip(w.word,
+      `${N(w.n)}× · ${w.ratio==null?"nobody else":w.ratio.toFixed(1)+"× more"}`))));
   }
   cw.append(el("details",{},el("summary",{},"Most-used words (raw counts)"),
     ...P.map((p,i)=>el("div",{style:"margin:6px 0"},
@@ -622,7 +686,7 @@ function render(A){
     for(const s of A.pickedUp.people){
       const i=P.findIndex(p=>p.who===s.who);
       cp.append(el("h3",{style:"margin:10px 0 4px"},el("span",{class:"swatch",style:`background:${color(i)}`}),s.who));
-      cp.append(el("div",{},s.words.map(w=>el("span",{class:"chip"},`${w.word} ${w.n}× from ${D(w.at)}`))));
+      cp.append(el("div",{},s.words.map(w=>chip(w.word,`${N(w.n)}× · since ${D(w.at)}`))));
     }
     m.append(cp);
   }
@@ -799,14 +863,10 @@ function setupForm(cfg){
   return box;
 }
 
-/**
- * Save an answer as Markdown. Built and downloaded in the page — the server
- * never sees it, which keeps the "nothing leaves this machine" promise intact
- * for the export as much as for the analysis.
- */
-function saveAnswer(r,question,secs){
+/** The answer plus the provenance you'd want if you pasted it somewhere. */
+function answerText(r,question,secs){
   const stamp=new Date().toISOString().slice(0,16).replace("T"," ");
-  const body=[
+  return [
     `# ${r.chat}`,``,
     `**Question:** ${question}`,
     `**Tone:** ${r.toneLabel}`,
@@ -815,11 +875,42 @@ function saveAnswer(r,question,secs){
     r.truncated?`\n> Cut off: the model hit its length limit before finishing.`:``,
     ``,`---`,``,r.answer,``,
   ].join("\n");
-  const safe=(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat";
-  const url=URL.createObjectURL(new Blob([body],{type:"text/markdown"}));
-  const a=el("a",{href:url,download:`MessageStats — ${safe} — ${stamp.slice(0,10)}.md`});
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+/**
+ * Save to disk through the server.
+ *
+ * The obvious approach — a Blob and <a download> — works in a browser and does
+ * nothing at all in the app: WKWebView drops downloads unless the host binary
+ * implements WKDownloadDelegate, and ours doesn't. A real save dialog means
+ * NSSavePanel in the sealed binary, so it would ship only with a new signed
+ * DMG. Writing from the server and revealing the file in Finder gets the same
+ * outcome and still updates by git pull.
+ */
+async function exportAnswer(r,question,secs,status){
+  status.textContent="Saving…";
+  try{
+    const name=`MessageStats — ${(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat"} — ${new Date().toISOString().slice(0,10)}`;
+    const res=await fetch("/api/export",{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({name,content:answerText(r,question,secs)})}).then(x=>x.json());
+    if(!res.ok) throw new Error(res.error||"could not write the file");
+    status.textContent=`Saved to ${res.path} — revealed in Finder.`;
+  }catch(e){ status.textContent="Couldn't save: "+e.message; }
+}
+
+async function copyAnswer(r,question,secs,status){
+  const text=answerText(r,question,secs);
+  try{
+    await navigator.clipboard.writeText(text);
+    status.textContent="Copied to the clipboard.";
+  }catch{
+    // Clipboard API needs a secure context and a user gesture; if the embedder
+    // withholds either, fall back to the selection trick.
+    const ta=el("textarea",{style:"position:fixed;opacity:0"}); ta.value=text;
+    document.body.append(ta); ta.select();
+    const ok=document.execCommand("copy"); ta.remove();
+    status.textContent=ok?"Copied to the clipboard.":"Couldn't copy — use Export instead.";
+  }
 }
 
 function askPanel(A){
@@ -845,15 +936,19 @@ function askPanel(A){
           .then(x=>x.json());
         if(r.error) throw new Error(r.error);
         out.innerHTML="";
-        out.append(el("div",{class:"m-t",style:"white-space:pre-wrap"},r.answer));
+        out.append(markdown(r.answer));
         // A truncated answer ends mid-sentence and otherwise looks finished.
         if(r.truncated) out.append(el("div",{class:"flag warn"},el("div",{},
           el("b",{},"Cut off. "),"The model hit its length limit before finishing — ask for fewer people at a time, or a shorter format.")));
         const secs=((Date.now()-t0)/1000).toFixed(1);
+        const asked=q.value;
+        const status=el("span",{class:"sub"});
         out.append(el("div",{class:"row",style:"margin-top:10px;align-items:center"},
-          el("button",{class:"act",onclick:()=>saveAnswer(r,q.value,secs)},"Export"),
-          el("span",{class:"sub"},
-            `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"} · ${secs}s`)));
+          el("button",{class:"act",onclick:()=>copyAnswer(r,asked,secs,status)},"Copy"),
+          el("button",{class:"act",onclick:()=>exportAnswer(r,asked,secs,status)},"Export"),
+          status));
+        out.append(el("p",{class:"sub",style:"margin-top:8px"},
+          `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"} · ${secs}s`));
       }catch(e){ out.innerHTML=""; out.append(el("p",{class:"muted"},"Failed: "+esc(e.message))); }
     };
     q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
