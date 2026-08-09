@@ -335,9 +335,60 @@ gitignored. Deliberately *not* in `names.json`: that file is identities and is
 hand-edited; this is a machine-written record of decisions about threads. The
 banner now offers "Merge them" and "Merge them — and remember", plus "Forget
 this" once a decision exists. `openChat()` prefers an explicit click, then the
-remembered decision, then the global `autoMerge` preference — and `loadMerges()`
-must resolve **before** `boot()`, or the first conversation of a session
-ignores every decision.
+remembered decision, then the global preference — and `loadMerges()` must
+resolve **before** `boot()`, or the first conversation of a session ignores
+every decision.
+
+### The sidebar lists conversations, not chat rows
+
+Two entries under the same name, 6,751 and 5,872, with nothing on screen to
+say which one you want. They were one work group: an iMessage thread that ran
+to 2025-10-15 and an RCS thread that took over from 2025-10-13, tied together
+by the same `original_group_id`. Whichever you opened, you read half of it and
+the other half looked like it had ended or never started.
+
+So `chats()` folds each **strict** sibling group into one row — combined count,
+union of the rosters, spanning first and last — and that row opens merged. The
+sidebar and the report have to agree: a list promising 12,623 that opens a
+report saying 6,745 is worse than either number alone. The preference behind it
+(`combineThreads`, on by default) governs **both halves**, and toggling it
+reloads the list in place rather than calling `boot()`, which would throw away
+the Settings page you are standing on.
+
+Only the strict tier folds. Same name, different roster stays a question — see
+below.
+
+### Three merge bugs that all looked like "the button did nothing"
+
+All three shipped together, all three were reported as one complaint, and they
+are worth keeping apart because only one of them was in the UI.
+
+- **Explicit ids replaced the siblings instead of adding to them.**
+  `resolveChats()` read `mergeIds.length ? [chatId, ...explicit] : merge ? …`,
+  so answering the same-name question — which sends explicit ids — silently
+  dropped the sibling thread the report had just been reading. Merging *lost*
+  5,872 messages and still announced "Merged 2 threads". It is a union now,
+  and `--merge 2488,2987` on the CLI folds the siblings in too.
+- **The question outlived its own answer.** `A.named` was everything sharing
+  the name, merged or not, so the banner offering to fold a thread in was still
+  there after it had been folded in. Both `A.named` and `A.siblings` are now
+  filtered against `resolved.ids`; `A.namedMerged` is the other half, and it is
+  what the undo button is built from.
+- **There was no way to say no.** The banner had "merge" and "merge and
+  remember" and nothing else, so a thread you had decided against asked again
+  on every open. `merges.local.json` entries carry `dismissed: [ids]`, and the
+  sidebar hint and landing-page count both read it — an answered question stops
+  being flagged everywhere, not just on the page where it was answered.
+
+The banner is now a **Merge?** question above the report title, because it
+changes what every number below it means, and it prints each candidate's
+roster and span: "same name, different roster" is unanswerable without seeing
+the two rosters, and making someone merge in order to find out is backwards.
+
+One more, from the same family: the roster table printed "— msgs, — span" for
+the biggest thread in every merge. The chat you opened is in neither
+`siblings` nor `named`, so there was no summary to find. Both frontends call
+`chatSummaries()` over all the merged ids now.
 
 ### The reaction breakdown is a matrix, not a stacked bar
 
