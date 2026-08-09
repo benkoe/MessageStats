@@ -553,12 +553,34 @@ $("#filter").addEventListener("input",e=>{
 });
 
 /* ---------- chat detail ---------- */
+/**
+ * Remembered merge decisions, chat id -> {merge, ids}.
+ *
+ * Merging used to be a per-view toggle: press Merge, read the report, open it
+ * again tomorrow and you are back to reading part of the history. A decision
+ * about whether two threads are one conversation is a fact about the data, so
+ * it is stored beside the data and applied on open.
+ */
+let MERGES={};
+const loadMerges=()=>api("/api/merges").then(m=>{MERGES=m||{};}).catch(()=>{MERGES={};});
+async function rememberMerge(chatId,body){
+  const r=await fetch("/api/merges",{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({chatId,...body})}).then(x=>x.json());
+  if(!r.ok) throw new Error(r.error||"could not save");
+  MERGES=r.merges||{};
+}
+
 async function openChat(id,opt){
   // merge:true folds sibling threads only — same people, different
   // chat_identifier. Same-name-different-roster threads are never folded
   // automatically, here or anywhere: a work group with staff churn and a chat
   // that deliberately excludes someone are indistinguishable in the schema.
-  if(opt) OPT=opt; else OPT={merge:PREFS.get("autoMerge"),ids:[]};
+  // A remembered decision for this conversation beats the global default;
+  // an explicit opt (someone just pressed a button) beats both.
+  const saved=MERGES[String(id)];
+  if(opt) OPT=opt;
+  else if(saved) OPT={merge:saved.merge,ids:saved.ids??[]};
+  else OPT={merge:PREFS.get("autoMerge"),ids:[]};
   newPage();
   CUR=id;
   for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current",String(+b.dataset.id===id));
@@ -569,6 +591,35 @@ async function openChat(id,opt){
   let A; try{ A=await api(`/api/chat/${id}?${qs}`);}catch(e){ $("#main").innerHTML=`<p class="muted">${esc(e.message)}</p>`; return;}
   if(A.error){ $("#main").innerHTML=`<p class="muted">${esc(A.error)}</p>`; return;}
   render(A);
+}
+
+/**
+ * The two buttons under a split-thread warning: apply it now, or apply it and
+ * remember. Remembering is the point — otherwise the same decision has to be
+ * made every time the conversation is opened, and a report read without it is
+ * quietly missing history.
+ */
+function mergeControls(chatId,body,label){
+  const note=el("span",{class:"sub"});
+  const row=el("div",{class:"row",style:"margin-top:8px;align-items:center;flex-wrap:wrap"});
+  const saved=MERGES[String(chatId)];
+  const forget=el("button",{class:"act",onclick:async ()=>{
+    forget.disabled=true;
+    try{ await rememberMerge(chatId,{forget:true}); note.textContent="Forgotten — it will open unmerged next time."; forget.remove(); }
+    catch(e){ note.textContent="Failed: "+e.message; forget.disabled=false; }
+  }},"Forget this");
+  row.append(
+    el("button",{class:"act",onclick:()=>openChat(chatId,body)},label),
+    el("button",{class:"act",onclick:async (ev)=>{
+      const b=ev.target; b.disabled=true; note.textContent="Saving…";
+      try{ await rememberMerge(chatId,body); note.textContent="Remembered — it will open this way from now on.";
+           if(!row.contains(forget)) row.append(forget);
+           openChat(chatId,body); }
+      catch(e){ note.textContent="Failed: "+e.message; b.disabled=false; }
+    }},`${label} — and remember`));
+  if(saved) row.append(forget);
+  row.append(note);
+  return row;
 }
 
 function render(A){
@@ -601,16 +652,13 @@ function render(A){
     m.append(el("div",{class:"flag warn"},el("div",{},
       el("b",{},`These same people have ${N(extra)} more messages in ${A.siblings.length} other thread(s). `),
       `About ${share<0.05?"<0.1":share.toFixed(1)}% of this conversation is missing from everything below.`,
-      el("div",{class:"row",style:"margin-top:8px"},
-        el("button",{class:"act",onclick:()=>openChat(A.chat.id,{merge:true,ids:[]})},"Merge them")))));
+      mergeControls(A.chat.id,{merge:true,ids:[]},"Merge them"))));
   }
   if(A.named?.length){
     m.append(el("div",{class:"flag warn"},el("div",{},
       el("b",{},`${A.named.length} thread(s) share this name but have a different roster. `),
       "Could be one group with people joining and leaving — or a chat that deliberately excludes someone. Not merged automatically.",
-      el("div",{class:"row",style:"margin-top:8px"},
-        el("button",{class:"act",onclick:()=>openChat(A.chat.id,{merge:false,ids:[A.chat.id,...A.named.map(x=>x.id)]})},
-          "Treat as one group")))));
+      mergeControls(A.chat.id,{merge:false,ids:[A.chat.id,...A.named.map(x=>x.id)]},"Treat as one group"))));
   }
 
   /* tiles */
@@ -1282,6 +1330,48 @@ async function renderSettings(){
     }
   }).catch(()=>ai.append(el("p",{class:"muted"},"Couldn't read the assistant config.")));
 
+  /* --- unnamed numbers --- */
+  if(st?.names?.unnamed?.length){
+    const nc = card("Put names to numbers",null,
+      `${N(st.names.unnamedTotal)} handles in your chats have no name, busiest first. A report full of phone numbers is much worse than one with names, and Contacts can't help with numbers it doesn't have.`);
+    nc.append(el("div",{class:"flag info"},el("div",{},
+      el("b",{},"If it's someone you already know under another number, pick them from the list instead. "),
+      "Naming it separately counts one person twice, with half their history each — every stat about them is then wrong.")));
+    const rows=el("div",{});
+    nc.append(rows);
+    m.append(nc);
+    api("/api/names").then(({known})=>{
+      if(gen!==PAGE) return;
+      for(const u of st.names.unnamed){
+        const input=el("input",{type:"text",placeholder:"Name",style:"max-width:200px"});
+        const same=el("select",{style:"max-width:190px"},el("option",{value:""},"…or same person as"));
+        for(const k of known) same.append(el("option",{value:k.handle},k.name));
+        const note=el("span",{class:"sub"});
+        const save=el("button",{class:"act",onclick:async ()=>{
+          const body = same.value ? {handle:u.handle,aliasOf:same.value}
+                                  : {handle:u.handle,name:input.value.trim()};
+          if(!same.value && !body.name){ note.textContent="Type a name, or pick who they are."; return; }
+          save.disabled=true; note.textContent="Saving…";
+          try{
+            const r=await fetch("/api/names",{method:"POST",headers:{"content-type":"application/json"},
+              body:JSON.stringify(body)}).then(x=>x.json());
+            if(!r.ok) throw new Error(r.error||"could not save");
+            note.textContent = same.value
+              ? `Folded into ${same.options[same.selectedIndex].text}.`
+              : `Saved as ${body.name}.`;
+            input.disabled=same.disabled=true;
+          }catch(e){ note.textContent="Failed: "+e.message; save.disabled=false; }
+        }},"Save");
+        rows.append(el("div",{class:"row",style:"margin:6px 0;align-items:center;flex-wrap:wrap"},
+          el("code",{style:"min-width:150px"},u.handle),
+          el("span",{class:"sub",style:"min-width:74px"},`${N(u.n)} msgs`),
+          input,same,save,note));
+      }
+      rows.append(el("p",{class:"sub",style:"margin-top:8px"},
+        "Reload a conversation to see the new names — they're written straight to names.json."));
+    }).catch(()=>{ if(gen===PAGE) rows.append(el("p",{class:"muted"},"Couldn't read the name list.")); });
+  }
+
   /* --- assistant history --- */
   const histCard = card("Assistant history", el("p",{class:"muted"},"Loading…"),
     "Every answer, kept in ai-history.local.json beside your database so you can reread one later. It quotes your conversations, so it never leaves this machine — and you can delete the lot here.");
@@ -1455,10 +1545,14 @@ $("#setbtn").addEventListener("click",()=>{
 // The app's Settings menu item navigates the web view to #settings rather than
 // needing a JavaScript bridge into the sealed Swift binary.
 addEventListener("hashchange",()=>{ if(location.hash==="#settings") renderSettings(); });
-if(location.hash==="#settings"){
-  // Still needs the chat list in the sidebar, so boot first, then swap the pane.
-  boot(true).then(renderSettings);
-} else boot();
+// Merge decisions must be in hand before any conversation opens, or the first
+// chat of the session ignores them.
+loadMerges().then(()=>{
+  if(location.hash==="#settings"){
+    // Still needs the chat list in the sidebar, so boot first, then swap the pane.
+    boot(true).then(renderSettings);
+  } else boot();
+});
 </script>
 </body>
 </html>

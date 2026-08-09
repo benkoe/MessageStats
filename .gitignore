@@ -8,6 +8,7 @@ names.json
 
 # Local notes: real names, confirmed merges, machine-specific decisions.
 NOTES.local.md
+merges.local.json
 
 # Assistant config (may hold an API key), the log of what was sent, and the
 # saved answers — the last one quotes real conversations back at you.

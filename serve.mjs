@@ -453,6 +453,77 @@ function brief(A, { search } = {}) {
 }
 
 /**
+ * Naming a handle, from the UI instead of a text editor.
+ *
+ * Two ways to resolve an unknown number, and the difference matters: a `name`
+ * makes it a new person, an `aliasOf` folds it into somebody already known.
+ * Getting that wrong is the split-identity trap in CLAUDE.md — the same person
+ * counted twice with half their history each — so the UI has to offer both.
+ *
+ * Reads and rewrites the whole file each time. It is a few hundred entries and
+ * hand-edited by people, so preserving their shape and comments-by-convention
+ * matters more than write efficiency.
+ */
+function saveName({ handle, name, aliasOf }) {
+  const h = normalizeHandle(String(handle ?? ""));
+  if (!h) throw new Error("no handle given");
+  let raw = {};
+  if (existsSync(NAMES_PATH)) {
+    try { raw = JSON.parse(readFileSync(NAMES_PATH, "utf8")); }
+    catch (err) { throw new Error(`names.json is not valid JSON (${err.message}) — fix it before saving`); }
+  }
+  // Tolerate both shapes loadIdentities accepts: {names:{},aliases:{}} and a
+  // bare handle→name map.
+  if (!raw.names || typeof raw.names !== "object") {
+    const flat = Object.fromEntries(Object.entries(raw).filter(([k]) => k !== "names" && k !== "aliases"));
+    raw = { names: flat, aliases: raw.aliases ?? {} };
+  }
+  raw.aliases ??= {};
+
+  if (aliasOf) {
+    const target = normalizeHandle(String(aliasOf));
+    if (!target) throw new Error("no target handle for the alias");
+    if (target === h) throw new Error("a handle cannot be an alias of itself");
+    raw.aliases[h] = target;
+    delete raw.names[h];              // the alias supplies the name now
+  } else {
+    const n = String(name ?? "").trim();
+    if (!n) throw new Error("no name given");
+    raw.names[h] = n;
+    delete raw.aliases[h];            // naming it directly undoes any alias
+  }
+  writeFileSync(NAMES_PATH, `${JSON.stringify(raw, null, 2)}\n`);
+  invalidate();
+  return { ok: true, handle: h };
+}
+
+/**
+ * Remembered merge decisions, so "these are one conversation" survives a
+ * reload instead of being a per-view toggle you re-apply every time.
+ *
+ * Kept out of names.json: that file is identities and is hand-edited. This is
+ * a machine-written record of choices about *threads*, keyed by chat id.
+ */
+const MERGES_FILE = path.join(DATA, "merges.local.json");
+
+function readMerges() {
+  try {
+    const j = JSON.parse(readFileSync(MERGES_FILE, "utf8"));
+    return j && typeof j === "object" ? j : {};
+  } catch { return {}; }
+}
+
+function saveMerge({ chatId, merge, ids, forget }) {
+  const key = String(Number(chatId));
+  if (key === "NaN") throw new Error("no chat id");
+  const all = readMerges();
+  if (forget) delete all[key];
+  else all[key] = { merge: Boolean(merge), ids: (ids ?? []).map(Number).filter(Boolean), at: new Date().toISOString() };
+  writeFileSync(MERGES_FILE, `${JSON.stringify(all, null, 2)}\n`);
+  return { ok: true, merges: all };
+}
+
+/**
  * Saved answers, so an ask is recoverable after a reload or a stray click.
  *
  * Lives beside the database rather than in browser storage: it quotes real
@@ -647,6 +718,25 @@ const server = createServer((req, res) => {
           invalidate();
           send(res, err ? 500 : 200, { ok: !err, output: `${stdout}${stderr}`.trim() });
         });
+    }
+    // POST first: a bare `p === "/api/names"` would swallow it.
+    if (p === "/api/names" && req.method === "POST") {
+      return withBody(async (q) => saveName(q));
+    }
+    if (p === "/api/merges" && req.method === "POST") {
+      return withBody(async (q) => saveMerge(q));
+    }
+    if (p === "/api/merges") return send(res, 200, readMerges());
+    if (p === "/api/names") {
+      // Everyone already known, so the UI can offer "same person as…" rather
+      // than making you retype a name that already exists.
+      const { names } = loadIdentities(NAMES_PATH);
+      const known = new Map();
+      for (const [h, n] of names) if (!known.has(n)) known.set(n, h);
+      return send(res, 200, {
+        known: [...known].map(([name, handle]) => ({ name, handle })).sort((a, b) => a.name.localeCompare(b.name)),
+        path: NAMES_PATH.replace(os.homedir(), "~"),
+      });
     }
     if (p === "/api/ai/history") {
       const all = readHistory();
