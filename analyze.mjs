@@ -23,6 +23,20 @@ export const TAPBACK_KINDS = {
   2006: "emoji", 2007: "sticker",
 };
 
+/**
+ * The glyph iMessage actually shows for each one, so the breakdown can be read
+ * at a glance instead of parsed as a sentence. Kept beside the names rather
+ * than in the UI because `stats.mjs` prints them too.
+ *
+ * 2006 and 2007 are the newer any-emoji and sticker reactions, which have no
+ * fixed glyph — they get a stand-in and their name.
+ */
+export const TAPBACK_ICONS = {
+  "loved": "❤️", "liked": "👍", "disliked": "👎",
+  "laughed at": "😂", "emphasized": "‼️", "questioned": "❓",
+  "emoji": "🙂", "sticker": "🩹",
+};
+
 const STOP = new Set(
   ("a about after all also am an and any are as at back be because been before but by can cant come " +
    "could did didnt do does doesnt doing dont down even for from get gets getting go going good got " +
@@ -544,11 +558,15 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     seenTaps.add(t.self);
     latest.set(`${label(t.handle, t.fromMe === 1)}|${t.guid ?? ""}`, t);
   }
+  const kindsBy = new Map();   // person -> kind -> n, for the per-person mix
   for (const t of latest.values()) {
     if (t.amt >= 3000) continue;               // taken back — never happened
     const who = label(t.handle, t.fromMe === 1);
+    const kind = TAPBACK_KINDS[t.amt] ?? String(t.amt);
     inc(given, who);
-    inc(kinds, TAPBACK_KINDS[t.amt] ?? String(t.amt));
+    inc(kinds, kind);
+    if (!kindsBy.has(who)) kindsBy.set(who, new Map());
+    inc(kindsBy.get(who), kind);
     // associated_message_guid is prefixed, e.g. "p:0/<guid>" — take the tail
     const target = t.guid?.includes("/") ? t.guid.split("/").pop() : t.guid ?? "";
     const hit = byGuid.get(target);
@@ -772,6 +790,8 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       doubles: doubles.get(who) ?? 0,
       given: given.get(who) ?? 0,
       received: received.get(who) ?? 0,
+      // Their mix of reaction kinds, for the per-person breakdown.
+      gaveKinds: Object.fromEntries(kindsBy.get(who) ?? []),
       laughs: laughs.get(who) ?? 0,
       questions: questions.get(who) ?? 0,
       shouts: shouts.get(who) ?? 0,
@@ -808,7 +828,7 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     },
     tapbacks: seenTaps.size === 0 ? null : {
       total: seenTaps.size,
-      kinds: topN(kinds, 9).map(([kind, n]) => ({ kind, n })),
+      kinds: topN(kinds, 9).map(([kind, n]) => ({ kind, n, icon: TAPBACK_ICONS[kind] ?? "•" })),
       mostReacted: topN(perMsg, 8)
         .map(([g, n]) => ({ n, msg: msgRef(byGuid.get(g)) }))
         .filter((x) => x.msg),

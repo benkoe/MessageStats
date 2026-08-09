@@ -161,6 +161,12 @@ button.act:disabled{opacity:.55;cursor:default}
 @media (prefers-reduced-motion:reduce){
   .spinner{animation-duration:2.4s}
 }
+/* Reaction matrix: glyph headers, tinted counts, a quiet totals row. */
+.tb-i{font-size:14px;text-align:center;width:44px}
+.tb-n{text-align:right;font-variant-numeric:tabular-nums}
+.tb-all td{border-top:1px solid var(--ring);color:var(--muted)}
+.tb-key{display:flex;flex-wrap:wrap;gap:4px 14px}
+.tb-key-i{margin-right:5px}
 .md p{margin:0 0 10px}
 .md h2,.md h3,.md h4{margin:14px 0 6px;font-size:14px}
 .md-list{margin:0 0 10px;padding-left:20px}
@@ -658,17 +664,47 @@ function render(A){
 
   /* tapbacks */
   if(A.tapbacks){
-    const tt=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"given"),el("th",{},"got"),
-      el("th",{},"ratio"),el("th",{},"per msg"))));
+    /* The kind breakdown used to be a sentence — "loved 9,633 · laughed at
+       6,689 · …" — which you have to read rather than see, and which said
+       nothing about who does what. It is now a column per reaction inside the
+       same table, headed by the glyph iMessage actually shows.
+
+       Deliberately not a stacked bar: eight categories in one bar is
+       unreadable, and it would need eight new colours nothing else uses. The
+       glyph carries identity, so no colour is invented; the cell tint is a
+       single hue standing for "share of this person's own reactions", which is
+       what makes the dominant one findable by eye. */
+    const KINDS=A.tapbacks.kinds;
+    const tt=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),
+      ...KINDS.map(k=>el("th",{class:"tb-i",title:k.kind},k.icon)),
+      el("th",{},"given"),el("th",{},"got"),el("th",{},"ratio"),el("th",{},"per msg"))));
     const ttb=el("tbody",{});
-    P.forEach((p,i)=>ttb.append(el("tr",{},
-      el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
-      el("td",{},N(p.given)),el("td",{},N(p.received)),
-      el("td",{},p.received?(p.given/p.received).toFixed(2):"—"),el("td",{},(p.received/p.n).toFixed(3)))));
+    P.forEach((p,i)=>{
+      const mix=p.gaveKinds??{};
+      const top=Math.max(1,...KINDS.map(k=>mix[k.kind]??0));
+      ttb.append(el("tr",{},
+        el("td",{},el("span",{class:"swatch",style:`background:${color(i)}`}),p.who),
+        ...KINDS.map(k=>{
+          const n=mix[k.kind]??0;
+          // Tint by share of this person's biggest reaction, so each row is
+          // readable on its own terms — hearts and stickers differ 700-fold.
+          const a=n? (0.06+0.26*(n/top)).toFixed(3) : 0;
+          return el("td",{class:"tb-n",style:n?`background:color-mix(in oklab,var(--s1) ${a*100}%,transparent)`:""},
+            n? N(n) : el("span",{class:"muted"},"—"));
+        }),
+        el("td",{},N(p.given)),el("td",{},N(p.received)),
+        el("td",{},p.received?(p.given/p.received).toFixed(2):"—"),el("td",{},(p.received/p.n).toFixed(3))));
+    });
+    ttb.append(el("tr",{class:"tb-all"},el("td",{},el("b",{},"everyone")),
+      ...KINDS.map(k=>el("td",{class:"tb-n"},N(k.n))),
+      el("td",{},N(A.tapbacks.total)),el("td",{},N(A.tapbacks.total)),el("td",{},"—"),el("td",{},"—")));
     tt.append(ttb);
     const ct=card("Tapbacks",el("div",{},
-      el("p",{class:"sub"},A.tapbacks.kinds.map(k=>`${k.kind} ${N(k.n)}`).join(" · ")),
-      el("div",{class:"scroll"},tt)),"Ratio under 1.00 means they receive more than they give.");
+      el("div",{class:"scroll"},tt),
+      // Identity is never glyph-alone: the legend spells each one out.
+      el("p",{class:"sub tb-key",style:"margin-top:8px"},
+        ...KINDS.map(k=>el("span",{},el("span",{class:"tb-key-i"},k.icon),k.kind)))),
+      "Ratio under 1.00 means they receive more than they give.");
     // Counted as people, so the ceiling is the roster. With two people the
     // ranking is 2, 1 or nothing — there is no story in it, so it is left out.
     if(A.people.length>2 && A.tapbacks.mostReacted.length){

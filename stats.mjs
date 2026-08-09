@@ -221,14 +221,22 @@ if (A.people.length > 2) {
 
 if (A.tapbacks) {
   head("Tapbacks");
-  console.log(`  ${A.tapbacks.total.toLocaleString()} total · ${A.tapbacks.kinds.map((k) => `${k.kind} ${k.n.toLocaleString()}`).join(" · ")}`);
-  console.log(`\n  ${pad("", 14)}${padL("GIVEN", 8)}${padL("GOT", 8)}${padL("RATIO", 8)}${padL("PER MSG", 9)}`);
+  // A column per reaction, headed by its glyph — same shape as the web UI, so
+  // neither can show a breakdown the other doesn't know about.
+  const K = A.tapbacks.kinds;
+  console.log(`  ${A.tapbacks.total.toLocaleString()} total`);
+  console.log(`\n  ${pad("", 14)}${K.map((k) => padL(k.icon, 8)).join("")}` +
+    `${padL("GIVEN", 8)}${padL("GOT", 8)}${padL("RATIO", 8)}${padL("PER MSG", 9)}`);
   for (const p of P) {
+    const mix = p.gaveKinds ?? {};
     console.log(
-      `  ${pad(p.who, 14)}${padL(p.given.toLocaleString(), 8)}${padL(p.received.toLocaleString(), 8)}` +
+      `  ${pad(p.who, 14)}${K.map((k) => padL((mix[k.kind] ?? 0).toLocaleString(), 8)).join("")}` +
+        `${padL(p.given.toLocaleString(), 8)}${padL(p.received.toLocaleString(), 8)}` +
         `${padL(p.received ? (p.given / p.received).toFixed(2) : "—", 8)}${padL((p.received / p.n).toFixed(3), 9)}`
     );
   }
+  console.log(`  ${pad("everyone", 14)}${K.map((k) => padL(k.n.toLocaleString(), 8)).join("")}`);
+  console.log(`  ${K.map((k) => `${k.icon} ${k.kind}`).join(" · ")}`);
   console.log(`  ratio = given/got. Under 1.00 means they receive more than they give.`);
   // Counted as distinct people, so two-person chats can only score 2, 1 or
   // nothing — no ranking worth printing. See the same rule in the web UI.

@@ -360,7 +360,7 @@ const TONES = {
   },
   funny: {
     label: "Funny",
-    prompt: "Tone: genuinely funny — the comedy comes from the numbers being absurd, not from you announcing that they are. Warm, never punching down. Land a joke per finding and move on.",
+    prompt: "Tone: genuinely funny, but the jokes stay tethered to the statistics — the comedy comes from the numbers being absurd, not from you announcing that they are. Warm, never punching down. One joke per finding, then move on. Ordinary sentences; no bits, no extended metaphors.",
   },
   roast: {
     label: "Roasting",
@@ -374,9 +374,12 @@ const TONES = {
     label: "Sarcastic",
     prompt: "Tone: dry and deadpan. Understatement, faint praise, the occasional raised eyebrow. Let the numbers do the damage while you sound unimpressed.",
   },
-  silly: {
-    label: "Silly",
-    prompt: "Tone: playful and a bit unhinged. Extended metaphors, absurd comparisons, chaotic energy — but the underlying claims still have to be true.",
+  // Was "Silly", which nobody could tell apart from "Funny" — both meant
+  // "make jokes". This one is a *format* change, not a volume knob: commit to
+  // a bit and stay in it. The claims underneath still have to be true.
+  unhinged: {
+    label: "Unhinged",
+    prompt: "Tone: commit to a bit and never break it. Pick an absurd frame — a nature documentary, a court transcript, a conspiracy corkboard, an epic poem — announce it in the first line and narrate the entire answer inside it. Extended metaphors, escalating stakes, full chaos. Every underlying claim must still be true and drawn from the statistics; the frame is a costume on real numbers, not licence to invent them.",
   },
   sportscaster: {
     label: "Sportscaster",
