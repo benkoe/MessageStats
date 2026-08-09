@@ -280,6 +280,32 @@ the async renders use. And the click handler only renders directly when the
 hash is already `#settings`; otherwise it sets the hash and lets `hashchange`
 do it. Either alone would have worked; the guard is the one that generalises.
 
+### The reaction breakdown is a matrix, not a stacked bar
+
+The kinds used to print as a sentence — "loved 9,633 · laughed at 6,689 · …" —
+which you read rather than see, and which said nothing about *who* does what.
+It is now a column per reaction inside the given/got table, headed by the glyph
+iMessage shows (`TAPBACK_ICONS`, beside the names in `analyze.mjs` so the CLI
+prints the same thing).
+
+Deliberately **not** a stacked bar: eight categories in one bar is unreadable,
+and it would need eight new colours nothing else in the app uses. The glyph
+carries identity, so no colour is invented; the only colour is a single-hue
+cell tint standing for "share of this person's own biggest reaction", which is
+what makes the dominant one findable by eye. Tint is normalised **per row** —
+hearts and stickers differ seven-hundred-fold, so a global scale would leave
+every column but one blank. A spelled-out legend sits underneath: identity is
+never glyph-alone.
+
+### Tone presets have to differ in *kind*, not degree
+
+"Silly" and "Funny" both meant "make jokes" and nobody could tell them apart —
+a fair question to be asked. A preset earns its slot only if it changes the
+*format* of the answer, not its volume. "Funny" is now explicitly ordinary
+prose with a joke per finding; "Unhinged" replaces "Silly" and commits to a
+stated frame — nature documentary, court transcript, epic poem — for the whole
+answer. If two presets can't be told apart from their output, delete one.
+
 ### The assistant: tone presets, and never present a cut-off answer as whole
 
 `TONES` in `serve.mjs` appends a tone instruction to `AI_SYSTEM`. The grounding
