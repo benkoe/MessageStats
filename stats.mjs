@@ -462,8 +462,11 @@ for (const r of A.odds.repeated) console.log(`    ${padL(r.n.toLocaleString(), 6
 // One-liners on purpose: a handful of bubbles, and voice notes are rare.
 if (A.apps) console.log(`\n  apps: ${A.apps.map((a) => `${a.name} ${a.n.toLocaleString()}`).join(" · ")}`);
 if (A.audio) {
-  console.log(`  voice notes: ${A.audio.n.toLocaleString()} sent, ${A.audio.played.toLocaleString()} played` +
-    (A.audio.n < 20 ? " — too few to read anything into" : ""));
+  // played is only meaningful against received: your own sends never get a
+  // local played mark, so lumping them implied ignored voice notes.
+  console.log(`  voice notes: ${A.audio.sent.toLocaleString()} sent, ${A.audio.received.toLocaleString()} received` +
+    (A.audio.received ? ` (${A.audio.played.toLocaleString()} played)` : "") +
+    (A.audio.sparse ? " — too few to read anything into" : ""));
 }
 
 console.log(`\n  first ever   ${day(A.odds.firstMsg.ms)}  ${A.odds.firstMsg.who}: "${quote(A.odds.firstMsg.text, 90)}"`);

@@ -1028,8 +1028,8 @@ function render(A){
   if(A.apps) co.append(el("p",{class:"sub"},el("b",{},"Apps: "),
     A.apps.map(a=>`${a.name} ${N(a.n)}`).join(" · ")));
   if(A.audio) co.append(el("p",{class:"sub"},el("b",{},"Voice notes: "),
-    `${N(A.audio.n)} sent, ${N(A.audio.played)} played.`,
-    A.audio.n<20?el("span",{}," Too few to read anything into."):null));
+    `${N(A.audio.sent)} sent, ${N(A.audio.received)} received${A.audio.received?` (${N(A.audio.played)} played)`:""}.`,
+    A.audio.sparse?el("span",{}," Too few to read anything into."):null));
   m.append(co);
 
   /* search + assistant */

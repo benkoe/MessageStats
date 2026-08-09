@@ -108,6 +108,8 @@ const obj = (map) => Object.fromEntries(map);
  */
 /** Below this many read receipts, report the count but not a median. */
 export const MIN_READ_SAMPLE = 20;
+/** Below this many voice notes, both frontends say "too few to read into". */
+export const MIN_AUDIO_SAMPLE = 20;
 const readSide = (xs) =>
   xs.length ? { n: xs.length, medianMs: xs.length >= MIN_READ_SAMPLE ? median(xs) : null } : null;
 
@@ -328,6 +330,11 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
 
   const YEAR = 365 * 86_400_000;
   const nameOfHandle = (h) => names.get(h) ?? h;
+  // The one fallback chain for naming a chat: display name, then the people
+  // in it, then the raw identifier. Written once — this chain had drifted
+  // into several hand-rolled copies that disagreed about unnamed groups.
+  const chatName = (dn, cid, ci) =>
+    dn?.trim() || [...(rosters.get(cid) ?? [])].map(nameOfHandle).sort().join(", ") || ci || `chat ${cid}`;
 
   // Fold 1:1 chats together by counterpart; keep groups as themselves.
   const byPerson = new Map(), groups = [];
@@ -340,7 +347,7 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
         id: cid,
         // Unnamed groups have a chat_identifier like "chat1343308266254744",
         // which tells you nothing. Who's in it does.
-        name: m.dn?.trim() || roster.map(nameOfHandle).sort().join(", ") || m.ci || `chat ${cid}`,
+        name: chatName(m.dn, cid, m.ci),
         n: c.n, sent: c.sent, received: c.received, first: c.first, last: c.last,
         people: roster.map(nameOfHandle).sort(),
       });
@@ -413,10 +420,10 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
    */
   const unread = hasColumns(db, "chat", "last_read_message_timestamp")
     ? db.prepare(
-        `select c.ROWID id, c.display_name dn, c.chat_identifier ci, c.style,
-                count(*) n,
+        `select c.ROWID id, c.display_name dn, c.chat_identifier ci,
+                count(distinct m.ROWID) n,
                 max(${SECONDS}) lastSec,
-                (c.last_read_message_timestamp / 1000000000 + ${APPLE_EPOCH}) readSec
+                (${SECONDS.replace("m.date", "c.last_read_message_timestamp")}) readSec
            from chat c
            join chat_message_join j on j.chat_id = c.ROWID
            join message m on m.ROWID = j.message_id
@@ -427,16 +434,16 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
           group by c.ROWID
           having n > 0
           order by n desc
-          limit 12`
-      ).all()
+          limit ?`
+      ).all(top)
     : [];
 
-  const rostersForUnread = unread.length ? chatRosters(db, canonical) : new Map();
+  // `rosters` from the group pass above — recomputing it here ran the full
+  // chat_handle_join scan twice on the landing page's already-slow cold build.
   const behind = unread.map((r) => {
-    const roster = [...(rostersForUnread.get(r.id) ?? [])].map((h) => names.get(h) ?? h);
     return {
       id: r.id,
-      name: r.dn?.trim() || roster.sort().join(", ") || r.ci || `chat ${r.id}`,
+      name: chatName(r.dn, r.id, r.ci),
       n: r.n,
       since: r.readSec * 1000,
       last: r.lastSec * 1000,
@@ -816,30 +823,75 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
    * so it is dropped here — what's left is the long tail: polls, Find My,
    * Apple Cash, games. A line, not a section.
    */
-  const apps = hasColumns(db, "message", "balloon_bundle_id")
+  /**
+   * Counting app bubbles is counting *sessions*, not rows. Every vote on a
+   * poll and every game move writes another row with the same bundle id
+   * (associated_message_type 2/3/4000), chained to the balloon it updates via
+   * `associated_message_guid` — and the chains are transitive: a poll's update
+   * can itself be updated. Row counts reported one poll voted on twenty times
+   * as "poll 21"; filtering to associated_message_type = 0 was wrong in the
+   * other direction, dropping polls whose *every* row is an update type.
+   *
+   * The rows are rare (hundreds in a whole library), so the exact answer is
+   * affordable: pull them and count chain roots.
+   */
+  const appRows = hasColumns(db, "message", "balloon_bundle_id")
     ? db.prepare(
-        `select m.balloon_bundle_id b, count(*) n
+        `select distinct m.ROWID rid, m.guid g, m.associated_message_guid ag, m.balloon_bundle_id b
            from message m
            join chat_message_join j on j.message_id = m.ROWID
           where j.chat_id in (${holes}) and m.balloon_bundle_id is not null
-            and m.balloon_bundle_id <> 'com.apple.messages.URLBalloonProvider'
-          group by 1 order by n desc limit 8`
+            and m.balloon_bundle_id <> 'com.apple.messages.URLBalloonProvider'`
       ).all(...ids)
-        // com.apple.messages.MSMessageExtensionBalloonPlugin:TEAMID:bundle.id
-        .map((r) => ({ name: String(r.b).split(":").pop().split(".").pop(), n: r.n }))
     : [];
+  // Follow each row to its chain root. The target guid may carry a part
+  // prefix (p:0/<guid>) like tapbacks do — take the tail.
+  const appByGuid = new Map(appRows.map((r) => [r.g, r]));
+  const rootOf = (r) => {
+    for (let hops = 0; r.ag && hops < 32; hops += 1) {
+      const target = appByGuid.get(r.ag.includes("/") ? r.ag.split("/").pop() : r.ag);
+      if (!target || target === r) break;
+      r = target;
+    }
+    return r.g;
+  };
+  // com.apple.messages.MSMessageExtensionBalloonPlugin:TEAMID:bundle.id — and
+  // third-party bundles end in a generic segment (.MessagesExtension, .ext),
+  // so taking the last dotted component collapsed every such app into the
+  // same name. Strip the generic tail; aggregation happens after renaming,
+  // so two ids that become one name merge instead of duplicating.
+  const GENERIC_TAIL = /^(messagesextensions?|messagesappextension|messagesapp|imessageextension|extension|ext)$/i;
+  const appSessions = new Map();   // name -> Set of chain roots
+  for (const r of appRows) {
+    const parts = String(r.b).split(":").pop().split(".").filter(Boolean);
+    while (parts.length > 1 && GENERIC_TAIL.test(parts[parts.length - 1])) parts.pop();
+    const name = parts[parts.length - 1] ?? String(r.b);
+    if (!appSessions.has(name)) appSessions.set(name, new Set());
+    appSessions.get(name).add(rootOf(r));
+  }
+  const apps = [...appSessions.entries()]
+    .map(([name, roots]) => ({ name, n: roots.size }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 8);
 
   /**
    * Voice notes. Almost nobody sends them — 129 in a 890k-message library — so
-   * this reports counts and never a rate: "0 of 3 played" is a number, not a
-   * fact about whether anyone listens.
+   * this reports counts and never a rate.
+   *
+   * Direction matters: `is_played` is only ever set on *received* audio (your
+   * own sends never get a local played mark), so a lumped "10 sent, 3 played"
+   * implied 7 were ignored when every receivable one was played. Sent and
+   * received are reported separately, and played only against received.
    */
   const audio = hasColumns(db, "message", "is_audio_message", "is_played")
     ? db.prepare(
-        `select count(*) n, sum(m.is_played = 1) played
+        `select count(distinct case when m.is_from_me = 1 then m.ROWID end) sent,
+                count(distinct case when m.is_from_me = 0 then m.ROWID end) received,
+                count(distinct case when m.is_from_me = 0 and m.is_played = 1 then m.ROWID end) played
            from message m
            join chat_message_join j on j.message_id = m.ROWID
-          where j.chat_id in (${holes}) and m.is_audio_message = 1`
+          where j.chat_id in (${holes}) and m.is_audio_message = 1
+            and ${REAL_MESSAGE_WHERE}`
       ).get(...ids)
     : null;
 
@@ -1014,12 +1066,21 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   /* ---- words + emoji ---- */
   const wordsBy = new Map(), totalWordsBy = new Map(), firstUse = new Map();
   const emojiBy = new Map(), emojiAll = new Map();
+  // vocab is filled here rather than in the odds-and-ends pass below: words()
+  // is the most expensive per-message call in the file (~190ms per 150k
+  // messages), and running it twice over every message doubled that for
+  // nothing. vocab deliberately includes stop words — it measures distinct
+  // words used, not distinctive ones.
+  const vocab = new Map();
   for (const m of msgs) {
     if (!wordsBy.has(m.who)) {
       wordsBy.set(m.who, new Map()); emojiBy.set(m.who, new Map());
       totalWordsBy.set(m.who, 0); firstUse.set(m.who, new Map());
+      vocab.set(m.who, new Set());
     }
+    const vs = vocab.get(m.who);
     for (const w of words(m.text)) {
+      vs.add(w);
       if (STOP.has(w)) continue;
       inc(wordsBy.get(m.who), w);
       if (!firstUse.get(m.who).has(w)) firstUse.get(m.who).set(w, m.ms);
@@ -1079,7 +1140,9 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
 
   /* ---- odds and ends ---- */
   const laughs = new Map(), questions = new Map(), shouts = new Map();
-  const links = new Map(), domains = new Map(), vocab = new Map(), exact = new Map();
+  // vocab lives in the words pass above — same tokenizer as the word counts,
+  // filled in the one place words() runs.
+  const links = new Map(), domains = new Map(), exact = new Map();
   for (const m of msgs) {
     if (LAUGH.test(m.text)) inc(laughs, m.who);
     // Anywhere, not just the last character — "wait what? lol" is a question.
@@ -1091,10 +1154,6 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       inc(links, m.who);
       try { inc(domains, new URL(url).hostname.replace(/^www\./, "")); } catch { /* ignore */ }
     }
-    if (!vocab.has(m.who)) vocab.set(m.who, new Set());
-    // Same tokenizer as the word counts — a vocabulary size inflated by link
-    // slugs would make whoever pastes the most URLs look the most articulate.
-    for (const w of words(m.text)) vocab.get(m.who).add(w);
     const key = m.text.trim().toLowerCase();
     if (key.length >= 2 && key.length <= 40) inc(exact, key);
   }
@@ -1182,7 +1241,12 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     },
     richLinks,
     apps: apps.length ? apps : null,
-    audio: audio?.n ? { n: audio.n, played: audio.played ?? 0 } : null,
+    // `sparse` is the data layer's call, like MIN_READ_SAMPLE — both frontends
+    // used to hard-code the same threshold separately, which is how they drift.
+    audio: (audio?.sent || audio?.received)
+      ? { sent: audio.sent, received: audio.received, played: audio.played,
+          sparse: audio.sent + audio.received < MIN_AUDIO_SAMPLE }
+      : null,
     services,
     replyGraph,
     groupHistory: history.length || departed.length ? { events: history, departed } : null,

@@ -443,6 +443,37 @@ function brief(A, { search } = {}) {
   if (A.tapbacks?.mostReacted.length)
     L.push(`MOST-REACTED: ${A.tapbacks.mostReacted.map((r) => `${r.n}x ${r.msg.who} "${r.msg.text.slice(0, 60)}"`).join(" | ")}`);
 
+  // Everything the report shows, the assistant must be able to see — a number
+  // on screen that isn't in this context produces confidently incomplete
+  // answers about the very page the user is looking at.
+  if (A.tapbacks?.customEmoji?.length)
+    L.push(`  custom emoji tapbacks: ${A.tapbacks.customEmoji.map((e) => `${e.emoji} ${e.n}`).join(" ")}`);
+  if (A.replyGraph?.edges.length) {
+    L.push(`\nWHO REPLIES TO WHOM (exact, from the reply gesture; ${A.replyGraph.used} replies = ${pc(A.replyGraph.used, A.total)} of messages):`);
+    for (const e of A.replyGraph.edges.slice(0, 12))
+      L.push(`  ${e.from} → ${e.to}: ${e.n}${e.medianMs != null ? ` (median ${Math.round(e.medianMs / 1000)}s)` : ""}`);
+    L.push(`  answers drawn per person: ${A.replyGraph.perPerson.filter((p) => p.got || p.given).map((p) => `${p.who} gave ${p.given}/got ${p.got}`).join(", ")}`);
+  }
+  if (A.groupHistory?.events.length) {
+    L.push(`\nGROUP HISTORY:`);
+    for (const e of A.groupHistory.events.slice(0, 20))
+      L.push(`  ${d(e.ms)} ${e.kind === "renamed" ? `renamed to "${e.title}"` : `${e.target ?? e.actor} ${e.kind}`}`);
+    if (A.groupHistory.departed.length) L.push(`  left but their messages remain: ${A.groupHistory.departed.join(", ")}`);
+  }
+  if (A.services)
+    L.push(`\nSERVICES: ${A.services.totals.map((t) => `${t.name} ${t.n} (${d(t.first)}→${d(t.last)})`).join(", ")}`);
+  if (A.richLinks) {
+    L.push(`\nLINKS SHARED (${A.richLinks.titled} of ${A.richLinks.cards} previews kept their metadata):`);
+    L.push(`  top sites: ${A.richLinks.topSites.map((s) => `${s.site} ${s.n}`).join(", ")}`);
+    for (const x of A.richLinks.recent.slice(0, 8)) L.push(`  ${d(x.ms)} ${x.who}: "${x.title.slice(0, 80)}"${x.site ? ` (${x.site})` : ""}`);
+    if (A.richLinks.reposts.length)
+      L.push(`  sent more than once: ${A.richLinks.reposts.map((r) => `"${r.title.slice(0, 50)}" x${r.n} by ${r.who.join("+")}`).join("; ")}`);
+  }
+  if (A.apps) L.push(`APPS: ${A.apps.map((a) => `${a.name} ${a.n}`).join(", ")}`);
+  if (A.audio) L.push(`VOICE NOTES: ${A.audio.sent} sent, ${A.audio.received} received, ${A.audio.played} of the received played${A.audio.sparse ? " (too few to generalise)" : ""}`);
+  if (A.perPerson.some((p) => p.screenshots || p.screenRecordings))
+    L.push(`CAMERA VS SCREEN: ${A.perPerson.filter((p) => p.cameraPhotos || p.screenshots).map((p) => `${p.who} ${p.cameraPhotos} camera/${p.screenshots} screenshots`).join(", ")}`);
+
   if (search?.total) {
     L.push(`\nSEARCH "${search.q}" — ${search.total} matches; by person ${JSON.stringify(search.byPerson)}`);
     L.push(`  by month: ${Object.entries(search.byMonth).map(([k, v]) => `${k}:${v}`).join(" ")}`);

@@ -50,10 +50,20 @@ export function parseBplist(buf) {
   if (offsetSize < 1 || offsetSize > 8 || refSize < 1 || refSize > 8) {
     throw new Error("bad bplist trailer");
   }
+  // The trailer's counts come from the blob, and the blob can be corrupt: a
+  // damaged trailer claiming 10^12 objects made `new Array(numObjects)` OOM
+  // the whole process (found by fuzzing). Every count must fit the bytes that
+  // are actually here before it is believed.
+  if (numObjects === 0 || tableOffset + numObjects * offsetSize > t) {
+    throw new Error("bplist trailer inconsistent with file size");
+  }
+  if (topObject >= numObjects) throw new Error("bplist top object out of range");
 
   const offsets = new Array(numObjects);
   for (let i = 0; i < numObjects; i += 1) {
-    offsets[i] = readBig(b, tableOffset + i * offsetSize, offsetSize);
+    const off = readBig(b, tableOffset + i * offsetSize, offsetSize);
+    if (off >= t) throw new Error("bplist object offset out of range");
+    offsets[i] = off;
   }
 
   // Objects can reference each other; a malformed file could cycle. Parsing is
@@ -75,6 +85,15 @@ function readBig(b, at, size) {
   let n = 0;
   for (let i = 0; i < size; i += 1) n = n * 256 + b[at + i];
   return n;
+}
+
+/**
+ * A declared length must fit inside the bytes that exist. Corrupt blobs claim
+ * container sizes in the billions; believing one allocates until the process
+ * dies, so every variable-length object checks before it reads.
+ */
+function fits(b, at, bytes) {
+  if (bytes < 0 || at + bytes > b.length) throw new Error("bplist length exceeds file size");
 }
 
 /** Length nibble: 0xF means "an integer object follows with the real length". */
@@ -119,16 +138,19 @@ function readObject(b, at, refSize, parseAt) {
 
     case 0x4: {                                    // data
       const { len, next } = readLength(b, at, low);
+      fits(b, next, len);
       return b.subarray(next, next + len);
     }
 
     case 0x5: {                                    // ASCII
       const { len, next } = readLength(b, at, low);
+      fits(b, next, len);
       return b.subarray(next, next + len).toString("latin1");
     }
 
     case 0x6: {                                    // UTF-16BE
       const { len, next } = readLength(b, at, low);
+      fits(b, next, len * 2);
       // Buffer.from(), not subarray(): subarray is a *view* onto the same
       // memory and swap16() mutates in place, so decoding a string used to
       // corrupt the blob being parsed. Every later read then returned
@@ -142,6 +164,7 @@ function readObject(b, at, refSize, parseAt) {
     case 0xA:
     case 0xC: {                                    // array, set
       const { len, next } = readLength(b, at, low);
+      fits(b, next, len * refSize);
       const out = [];
       for (let i = 0; i < len; i += 1) out.push(parseAt(readBig(b, next + i * refSize, refSize)));
       return out;
@@ -149,6 +172,7 @@ function readObject(b, at, refSize, parseAt) {
 
     case 0xD: {                                    // dict
       const { len, next } = readLength(b, at, low);
+      fits(b, next, len * refSize * 2);
       const out = {};
       for (let i = 0; i < len; i += 1) {
         const k = parseAt(readBig(b, next + i * refSize, refSize));
