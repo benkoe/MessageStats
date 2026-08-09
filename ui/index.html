@@ -669,11 +669,20 @@ function render(A){
     const ct=card("Tapbacks",el("div",{},
       el("p",{class:"sub"},A.tapbacks.kinds.map(k=>`${k.kind} ${N(k.n)}`).join(" · ")),
       el("div",{class:"scroll"},tt)),"Ratio under 1.00 means they receive more than they give.");
-    if(A.tapbacks.mostReacted.length){
-      ct.append(el("h3",{style:"margin:12px 0 4px"},"Most-reacted messages"));
-      for(const r of A.tapbacks.mostReacted)
-        ct.append(el("div",{class:"msg"},el("div",{class:"m-h"},`${r.n}× · ${r.msg.who} · ${D(r.msg.ms)}`),
-          el("div",{class:"m-t"},r.msg.text.slice(0,180))));
+    // Counted as people, so the ceiling is the roster. With two people the
+    // ranking is 2, 1 or nothing — there is no story in it, so it is left out.
+    if(A.people.length>2 && A.tapbacks.mostReacted.length){
+      ct.append(el("h3",{style:"margin:12px 0 4px"},"Most-reacted messages"),
+        el("p",{class:"sub"},"How many people reacted, not how many taps — a photo dump collects one per photo and would otherwise dwarf everything."));
+      for(const r of A.tapbacks.mostReacted){
+        // Attachment-only messages have no text, just object-replacement
+        // characters, and rendered as blank rows with no explanation.
+        const body=(r.msg.text||"").replace(/￼/g,"").trim();
+        ct.append(el("div",{class:"msg"},
+          el("div",{class:"m-h"},`${r.n} ${r.n===1?"person":"people"} · ${r.msg.who} · ${D(r.msg.ms)}`),
+          body ? el("div",{class:"m-t"},body.slice(0,180))
+               : el("div",{class:"m-t sub"},"(no text — an attachment)")));
+      }
     }
     m.append(ct);
   }
@@ -801,10 +810,12 @@ function render(A){
 /* ---------- assistant ---------- */
 // Three, not five. These are examples of the kind of thing worth asking, not a
 // menu — a long list reads like features and stops people typing their own.
+/* Two of these show it can read the numbers; the third shows it will play
+   along, which is the part nobody guesses from an empty text box. */
 const SUGGESTED = [
   "What's the weirdest thing in here?",
   "How have we changed since we started talking?",
-  "Which of these numbers shouldn't I trust?",
+  "Turn us into Game of Thrones characters",
 ];
 
 /**
@@ -966,7 +977,9 @@ async function copyAnswer(r,question,secs,status){
 }
 
 function askPanel(A){
-  const card = el("div",{class:"card"}, el("h2",{},"Ask"));
+  // "Assistant" everywhere — Settings already called it that, and one feature
+  // with two names reads as two features.
+  const card = el("div",{class:"card"}, el("h2",{},"Assistant"));
   const out = el("div",{});
   api("/api/ai").then(cfg=>{
     if(cfg.error){ card.append(el("div",{class:"flag warn"},el("div",{},el("b",{},"Assistant config problem: "),cfg.error))); return; }

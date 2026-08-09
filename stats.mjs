@@ -230,10 +230,14 @@ if (A.tapbacks) {
     );
   }
   console.log(`  ratio = given/got. Under 1.00 means they receive more than they give.`);
-  if (A.tapbacks.mostReacted.length) {
-    console.log(`\n  most-reacted messages:`);
+  // Counted as distinct people, so two-person chats can only score 2, 1 or
+  // nothing — no ranking worth printing. See the same rule in the web UI.
+  if (A.people.length > 2 && A.tapbacks.mostReacted.length) {
+    console.log(`\n  most-reacted messages (people who reacted, not taps):`);
     for (const { n, msg } of A.tapbacks.mostReacted) {
-      console.log(`    ${padL(n, 3)}  ${pad(msg.who, 12)} ${day(msg.ms)}  "${quote(msg.text, 78)}"`);
+      const body = (msg.text || "").replace(/￼/g, "").trim();
+      console.log(`    ${padL(n, 3)}  ${pad(msg.who, 12)} ${day(msg.ms)}  ` +
+        (body ? `"${quote(body, 78)}"` : "(no text — an attachment)"));
     }
   }
 }

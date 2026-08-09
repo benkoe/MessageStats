@@ -510,6 +510,9 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
 
   /* ---- tapbacks ---- */
   const holes = ids.map(() => "?").join(",");
+  // 2000–2007 add a tapback, 3000–3007 take one back. Reading only the adds
+  // counts a reaction somebody removed; ordering by date and keeping the last
+  // state per (part, reactor) settles both removals and changes.
   const taps = db
     .prepare(
       `select m.guid self, m.associated_message_guid guid,
@@ -518,22 +521,44 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
          join chat_message_join j on j.message_id = m.ROWID
          left join handle h on h.ROWID = m.handle_id
         where j.chat_id in (${holes})
-          and m.associated_message_type between 2000 and 2007`
+          and m.associated_message_type between 2000 and 3007
+        order by m.date asc`
     )
     .all(...ids);
 
-  const given = new Map(), received = new Map(), perMsg = new Map(), kinds = new Map();
+  const given = new Map(), received = new Map(), kinds = new Map();
+  /**
+   * How many *people* reacted to a message — not how many tapback rows it has.
+   *
+   * A tapback targets one *part*, and `associated_message_guid` carries the
+   * part as a prefix: `p:3/<guid>`. A message that is a photo dump is one
+   * message with many parts, so one person hearting fifteen of eighteen photos
+   * produced "15×" in a two-person chat. Counting distinct reactors bounds the
+   * number by the roster, which is the only reading that means anything.
+   */
+  const reactors = new Map();   // target guid -> Set of people
+  const latest = new Map();     // "reactor|part-qualified guid" -> amt
   const seenTaps = new Set();
   for (const t of taps) {
     if (seenTaps.has(t.self)) continue;
     seenTaps.add(t.self);
-    inc(given, label(t.handle, t.fromMe === 1));
+    latest.set(`${label(t.handle, t.fromMe === 1)}|${t.guid ?? ""}`, t);
+  }
+  for (const t of latest.values()) {
+    if (t.amt >= 3000) continue;               // taken back — never happened
+    const who = label(t.handle, t.fromMe === 1);
+    inc(given, who);
     inc(kinds, TAPBACK_KINDS[t.amt] ?? String(t.amt));
     // associated_message_guid is prefixed, e.g. "p:0/<guid>" — take the tail
     const target = t.guid?.includes("/") ? t.guid.split("/").pop() : t.guid ?? "";
     const hit = byGuid.get(target);
-    if (hit) { inc(received, hit.who); inc(perMsg, target); }
+    if (hit) {
+      inc(received, hit.who);
+      if (!reactors.has(target)) reactors.set(target, new Set());
+      reactors.get(target).add(who);
+    }
   }
+  const perMsg = new Map([...reactors].map(([g, s]) => [g, s.size]));
 
   /* ---- attachments ---- */
   const attRows = hasColumns(db, "attachment", "mime_type", "uti", "total_bytes", "is_sticker", "transfer_name")
