@@ -325,6 +325,54 @@ Anything that reads well pasted elsewhere should also offer **Copy** —
 clipboard access works from `http://127.0.0.1` because localhost counts as a
 secure context, with the `execCommand` selection trick as a fallback.
 
+### An in-flight ask must not live in the DOM
+
+Clicking another conversation calls `openChat()`, which empties `#main`. There
+is no `AbortController` anywhere in the UI, so the request was never cancelled
+— it completed, was **billed**, and rendered into a detached node nobody could
+see. Worst of both worlds: you paid and waited and got nothing.
+
+`ASKS` (a module-level `Map` keyed by chat id) holds the promise and settles
+the result into the entry, so it outlives any panel. A rebuilt `askPanel()`
+adopts the existing entry rather than firing a second request, and a chat with
+one in the air gets a pulsing dot in the sidebar. Anything else expensive and
+async should be held the same way — the generation guard is right for cheap
+renders, but discarding an answer somebody is paying for is not.
+
+Testing this needs a slow provider you are not paying for. Point a throwaway
+`MESSAGESTATS_DATA` at a directory whose `ai.local.json` uses the `ollama`
+provider with `baseUrl` set to a local stub that sleeps before replying — the
+OpenAI wire is simple enough to fake in a dozen lines, and symlinking `chat.db`
+in keeps it reading real data without touching the real config.
+
+### Saved answers live beside the database, not in the browser
+
+`ai-history.local.json` in the data directory, capped at 200, gitignored. It
+quotes real conversations, so it belongs with the other private files where it
+can be read and deleted by hand rather than in an opaque browser store that a
+"clear site data" would silently take with it.
+
+### RTF: escape first, and \u is signed
+
+Export offers `.txt`, `.rtf` and `.md`. Two things bite in the RTF writer:
+escape `\`, `{` and `}` **before** inserting control words, or the backslashes
+you just added get escaped in turn; and `\uN` is a **signed 16-bit** value, so
+anything above 32767 must be written as `N - 65536`. Every emoji is a surrogate
+pair above that line, and these answers are full of emoji — get it wrong and
+readers show garbage. Validate with `textutil -convert txt -stdout file.rtf`,
+which parses exactly like TextEdit.
+
+Also: in the plain-text converter, strip list markers with `[ \t]*`, never
+`\s*` — `\s` matches newlines, so the blank line before a list gets eaten and
+paragraphs run into the bullets.
+
+### Report paths, never hardcode them
+
+The Settings and About cards printed `~/Library/Application Support/MessageStats`
+as a literal string, which is a lie whenever `MESSAGESTATS_DATA` is set — the
+screen names one directory while the app reads another. `status()` returns
+`dirs.data` and `dirs.code` and the page prints those.
+
 ### Assistant answers are Markdown — render them
 
 Models emit `**bold**` whether or not the prompt asks for it. The answer was
