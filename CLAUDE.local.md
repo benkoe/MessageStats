@@ -299,6 +299,44 @@ complete one and is worth nothing, so it must be visible.
 Export builds the Markdown in the page and downloads a Blob — the server never
 sees it, which keeps the local-only promise true for exports too.
 
+### WKWebView cannot download anything — the Export button did nothing
+
+A Blob plus `<a download>` is the standard way to save a file from a page. It
+works in a browser and is **silently ignored** in the app: `WKWebView` drops
+downloads unless the host implements `WKDownloadDelegate`, and
+`MessageStats.swift` does not. No error, no console message, no file — the
+button simply did nothing, and it tested fine in Chrome.
+
+This is the same shape as the Full Disk Access deep link above, and the same
+answer applies: anything needing the sealed binary means a new signed DMG, so
+route it through the server instead. `POST /api/export` writes the file to
+`~/Downloads` and runs `open -R` to reveal it in Finder. Not a save dialog —
+that would need `NSSavePanel` in the binary — but the same outcome, and it
+ships by `git pull`.
+
+**The endpoint names the file, not the caller.** It writes to disk and any page
+in any browser can POST to a loopback server, so the name is stripped to a
+basename, non-filename characters removed, leading dots dropped so it cannot
+create a hidden file, and `.md` is always appended. Verified: a name of
+`../../../../tmp/evil` lands as a literal file inside `~/Downloads`, not in
+`/tmp`.
+
+Anything that reads well pasted elsewhere should also offer **Copy** —
+clipboard access works from `http://127.0.0.1` because localhost counts as a
+secure context, with the `execCommand` selection trick as a fallback.
+
+### Assistant answers are Markdown — render them
+
+Models emit `**bold**` whether or not the prompt asks for it. The answer was
+being inserted as plain text in a `white-space:pre-wrap` div, so every name in
+an answer showed up wrapped in literal asterisks.
+
+`markdown()` in `ui/index.html` handles headings, bullet and numbered lists,
+bold, italic and backtick code. It builds **DOM nodes, never innerHTML** — the
+text comes from a model, and `el()` routes every string through
+`createTextNode`, so there is no path from model output to markup. Keep it that
+way if the renderer grows.
+
 ### Look for one-way doors
 
 Three separate screens shipped as "first run only" with no way back: the setup
