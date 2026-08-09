@@ -555,6 +555,18 @@ const server = createServer((req, res) => {
           send(res, err ? 500 : 200, { ok: !err, output: `${stdout}${stderr}`.trim() });
         });
     }
+    if (p === "/api/open-privacy" && req.method === "POST") {
+      // Full Disk Access is the one permission with no request API — nothing
+      // can make the prompt appear, so the best available is jumping straight
+      // to the pane the user has to toggle by hand.
+      //
+      // Deliberately takes no URL. An endpoint that opens whatever it is given
+      // is a hole: any page in any browser can POST to a loopback server, and
+      // this one would hand it a URL launcher. The destination is fixed here.
+      const pane = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+      return execFile("/usr/bin/open", [pane], (err) =>
+        send(res, err ? 500 : 200, { ok: !err, error: err ? err.message : null }));
+    }
     if (p === "/api/reload" && req.method === "POST") {
       invalidate();
       if (db) { db.close(); db = null; }

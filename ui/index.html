@@ -389,18 +389,31 @@ async function renderSetup(st,{refresh=false}={}){
         status);
       m.append(card1);
     } else {
+      const fdaStatus=el("p",{class:"sub"});
       m.append(el("div",{class:"card"},
         el("h2",{},"macOS won't let me read your Messages folder"),
         el("p",{},"That folder is protected, and there's no way for a program to ask for permission — you have to grant it by hand. Two options:"),
         el("h3",{style:"margin-top:14px"},"Option A — grant Full Disk Access, then I'll do the copying"),
         el("ol",{class:"steps"},
-          el("li",{},"System Settings → Privacy & Security → ",el("b",{},"Full Disk Access")),
+          el("li",{},"Open ",el("b",{},"Full Disk Access"),
+            el("div",{class:"sub"},"The button below jumps straight there. By hand it's System Settings → Privacy & Security → Full Disk Access.")),
           el("li",{},"Switch on ",el("b",{},"MessageStats"),
             el("div",{class:"sub"},"If you started the server yourself with ",el("code",{},"node serve.mjs"),", add the terminal app you ran it from instead.")),
           el("li",{},el("b",{},"Fully quit MessageStats and open it again"),
             el("div",{class:"sub"},"The permission only applies to a freshly launched process, so a reload isn't enough.")),
           el("li",{},"Come back to this page")),
-        el("div",{class:"row"},el("button",{class:"act primary",onclick:()=>boot()},"I've done that — recheck"))));
+        el("div",{class:"row"},
+          el("button",{class:"act",onclick:async ev=>{
+            const b=ev.target; b.disabled=true;
+            try{
+              const r=await fetch("/api/open-privacy",{method:"POST"}).then(r=>r.json());
+              if(!r.ok) throw new Error(r.error||"could not open System Settings");
+              fdaStatus.textContent="Opened System Settings — switch on MessageStats, then quit and reopen it.";
+            }catch(e){ fdaStatus.textContent="Couldn't open it: "+e.message+" — use the path in step 1 instead."; }
+            b.disabled=false;
+          }},"Open Full Disk Access settings"),
+          el("button",{class:"act primary",onclick:()=>boot()},"I've done that — recheck")),
+        fdaStatus));
       m.append(manualCard());
     }
     if(!refresh){
