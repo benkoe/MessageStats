@@ -88,6 +88,13 @@ Then tell the user, in a line or two, what you found:
   own too, with the exact share you'd be dropping, but by then a ROWID has
   already been chosen.
 
+  The web UI does not ask about this tier at all any more: the sidebar lists
+  one entry per *conversation*, with the sibling rows folded in and counted
+  together, and opens it merged. Two rows with the same name and no way to
+  tell them apart is a list of chat table rows, not a list of conversations.
+  The CLI still makes you pass `--merge`, so the two disagree by default —
+  when comparing a terminal run against the app, that is why.
+
 - **Any roster churn?** A second, softer flag — `? same name, different
   roster` — means several threads share a display name but not a membership.
   **Ask before merging these.** A work group where people are added and
@@ -103,6 +110,16 @@ Then tell the user, in a line or two, what you found:
   part of the span looks quiet, and anyone who *left* is missing from every
   roster while their messages remain, so a merged group can show senders who
   appear on no membership list at all.
+
+  In the web UI this is a **Merge?** question above the report's title, with
+  each candidate thread's roster and span printed next to it, and it takes
+  "no" as an answer — the refusal is stored in `merges.local.json` so it stops
+  being asked. Both answers make the box disappear; if the report still shows
+  a merge banner you have not answered anything.
+
+  `--merge <ids>` **adds** to the sibling threads, it does not replace them.
+  Answering this softer question used to drop the strict siblings on the
+  floor, so the merged report came out *smaller* than the unmerged one.
 
   Confirmed decisions for this machine's copy live in `NOTES.local.md`, next to
   the database in `~/Library/Application Support/MessageStats/` — not in this

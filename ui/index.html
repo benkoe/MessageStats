@@ -420,7 +420,10 @@ const newPage=()=>++PAGE;
 /* Preferences live in the browser, not on disk: they change how this page
    behaves, not what the numbers are. The WKWebView keeps its own localStorage,
    so they persist across launches of the app. */
-const PREF_DEFAULTS = { autoMerge:false, aiTone:"funny" };
+/* combineThreads replaced an older `autoMerge` key that defaulted to false. A
+   new key rather than a flipped default: the stored value of the old one would
+   otherwise keep the old behaviour for anyone who had ever opened Settings. */
+const PREF_DEFAULTS = { combineThreads:true, aiTone:"funny" };
 const PREFS = {
   all(){ try { return {...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem("messagestats.prefs")||"{}")}; }
          catch { return {...PREF_DEFAULTS}; } },
@@ -534,23 +537,46 @@ async function renderSetup(st,{refresh=false}={}){
 }
 
 /* ---------- sidebar ---------- */
+/* Which sidebar row covers a given chat id. A combined row stands for several
+   threads, so a click on any of them — from the overview tables, say — has to
+   open the same merged report the row promises. */
+const GROUP=new Map();
+const indexChats=()=>{ GROUP.clear(); for(const c of CHATS) for(const id of c.ids??[c.id]) GROUP.set(id,c); };
+/* Same-name-different-roster threads this conversation has not been asked
+   about yet — the sidebar hint and the landing-page count both mean "still an
+   open question", not "such a thread exists". */
+const pendingNamed=(c)=>{
+  const dismissed=new Set(savedMerge(c.id)?.dismissed??[]);
+  return (c.named??[]).filter(x=>!dismissed.has(x.id));
+};
+async function loadChats(){
+  CHATS=await api(`/api/chats?min=200&combine=${PREFS.get("combineThreads")?1:0}`);
+  indexChats();
+  renderChats(CHATS);
+}
+
 function renderChats(list){
   const box=$("#chatlist"); box.innerHTML="";
   for(const c of list){
     const b=el("button",{class:"chat",onclick:()=>openChat(c.id)},
       el("div",{class:"t"},el("span",{class:"n"},c.name),el("span",{class:"c"},N(c.n))),
       el("div",{class:"p"},c.isGroup? c.people.join(", ") : D(c.first)+" → "+D(c.last)));
-    if(c.siblings.length) b.append(el("div",{class:"p"},
+    if(c.combined) b.append(el("div",{class:"p"},`${c.ids.length} threads combined`));
+    else if(c.siblings.length) b.append(el("div",{class:"p"},
       el("span",{style:"color:var(--warn)"},"⚠ "),`split across ${c.siblings.length+1} threads`));
-    else if(c.named.length) b.append(el("div",{class:"p"},"? same name, other roster"));
+    // A settled question stops being a question here too — the report hides it
+    // once answered, and a sidebar that keeps flagging it says the opposite.
+    if(pendingNamed(c).length) b.append(el("div",{class:"p"},"? same name, other roster"));
     b.dataset.id=c.id;
     box.append(b);
   }
 }
-$("#filter").addEventListener("input",e=>{
-  const q=e.target.value.toLowerCase();
-  renderChats(CHATS.filter(c=>(c.name+" "+c.people.join(" ")).toLowerCase().includes(q)));
-});
+/* Re-draw the list without losing whatever is typed in the filter. */
+function refreshChats(){
+  const q=($("#filter").value||"").toLowerCase();
+  renderChats(q? CHATS.filter(c=>(c.name+" "+c.people.join(" ")).toLowerCase().includes(q)) : CHATS);
+}
+$("#filter").addEventListener("input",refreshChats);
 
 /* ---------- chat detail ---------- */
 /**
@@ -568,20 +594,43 @@ async function rememberMerge(chatId,body){
     body:JSON.stringify({chatId,...body})}).then(x=>x.json());
   if(!r.ok) throw new Error(r.error||"could not save");
   MERGES=r.merges||{};
+  // The sidebar hints are drawn from these decisions, so an answered question
+  // has to stop being flagged there too — otherwise the list keeps asking
+  // something the report has already settled.
+  refreshChats();
+}
+
+/* A decision is about a conversation, not about whichever of its chat rows you
+   happened to click, so it is looked up across the whole sibling group. Keying
+   it to one id alone breaks the moment a busier thread takes over the row. */
+function savedMerge(id){
+  const g=GROUP.get(id);
+  for(const k of [id,...(g?.ids??[])]) if(MERGES[String(k)]) return MERGES[String(k)];
+  return null;
 }
 
 async function openChat(id,opt){
-  // merge:true folds sibling threads only — same people, different
-  // chat_identifier. Same-name-different-roster threads are never folded
-  // automatically, here or anywhere: a work group with staff churn and a chat
-  // that deliberately excludes someone are indistinguishable in the schema.
-  // A remembered decision for this conversation beats the global default;
-  // an explicit opt (someone just pressed a button) beats both.
-  const saved=MERGES[String(id)];
+  // merge:true folds sibling threads — same people, or the same
+  // original_group_id, from a recreated group, a rename or an SMS fork.
+  // Same-name-different-roster threads are never folded automatically, here or
+  // anywhere: a work group with staff churn and a chat that deliberately
+  // excludes someone are indistinguishable in the schema, so those are the
+  // question at the top of the report instead.
+  //
+  // A remembered decision beats the preference; an explicit opt (someone just
+  // pressed a button) beats both. `merge` is OR-ed rather than taken from the
+  // saved record: `ids` there answers the same-name question, and a saved
+  // {merge:false, ids:[…]} must not un-fold the siblings the sidebar has
+  // already counted into the row.
+  const saved=savedMerge(id);
   if(opt) OPT=opt;
-  else if(saved) OPT={merge:saved.merge,ids:saved.ids??[]};
-  else OPT={merge:PREFS.get("autoMerge"),ids:[]};
+  else if(saved) OPT={merge:saved.merge||PREFS.get("combineThreads"),ids:saved.ids??[]};
+  else OPT={merge:PREFS.get("combineThreads"),ids:[]};
   newPage();
+  // Anchor the report on the row the sidebar shows. Clicking a folded-in
+  // thread from one of the overview tables otherwise opens a conversation the
+  // list has no entry for, and nothing looks selected.
+  id=GROUP.get(id)?.id ?? id;
   CUR=id;
   for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current",String(+b.dataset.id===id));
   $("#main").innerHTML='<p class="muted">Reading messages…</p>';
@@ -594,48 +643,94 @@ async function openChat(id,opt){
 }
 
 /**
- * The two buttons under a split-thread warning: apply it now, or apply it and
- * remember. Remembering is the point — otherwise the same decision has to be
- * made every time the conversation is opened, and a report read without it is
- * quietly missing history.
+ * Every outstanding merge decision for this conversation, asked once, as a
+ * question with a yes and a no.
+ *
+ * It sits above the title because it changes what every number underneath it
+ * means, and it disappears the moment it is answered — either way. It replaced
+ * three overlapping buttons ("Treat as one group", "…— and remember", "Forget
+ * this") that sat halfway down the report and stayed there after you had used
+ * them, so pressing one looked like it had done nothing. Every answer is
+ * remembered; a decision you have to re-make on every open is not an answer.
+ *
+ * "No" is stored too — a question with no way to say no is asked forever.
  */
-function mergeControls(chatId,body,label){
+function mergeQuestion(A){
+  const saved=savedMerge(A.chat.id);
+  const dismissed=new Set(saved?.dismissed??[]);
+  const named=(A.named??[]).filter(x=>!dismissed.has(x.id));
+  // Siblings only reach this point with "show split threads as one
+  // conversation" turned off; with it on they are already folded in.
+  const siblings=(A.siblings??[]).filter(x=>!dismissed.has(x.id));
+  const pending=[...siblings,...named];
+  if(!pending.length) return null;
+
+  const total=pending.reduce((s,x)=>s+x.n,0);
+  const share=total/(A.total+total)*100;
   const note=el("span",{class:"sub"});
-  const row=el("div",{class:"row",style:"margin-top:8px;align-items:center;flex-wrap:wrap"});
-  const saved=MERGES[String(chatId)];
-  const forget=el("button",{class:"act",onclick:async ()=>{
-    forget.disabled=true;
-    try{ await rememberMerge(chatId,{forget:true}); note.textContent="Forgotten — it will open unmerged next time."; forget.remove(); }
-    catch(e){ note.textContent="Failed: "+e.message; forget.disabled=false; }
-  }},"Forget this");
-  row.append(
-    el("button",{class:"act",onclick:()=>openChat(chatId,body)},label),
-    el("button",{class:"act",onclick:async (ev)=>{
-      const b=ev.target; b.disabled=true; note.textContent="Saving…";
-      try{ await rememberMerge(chatId,body); note.textContent="Remembered — it will open this way from now on.";
-           if(!row.contains(forget)) row.append(forget);
-           openChat(chatId,body); }
-      catch(e){ note.textContent="Failed: "+e.message; b.disabled=false; }
-    }},`${label} — and remember`));
-  if(saved) row.append(forget);
-  row.append(note);
-  return row;
+  const body={merge:true,ids:[A.chat.id,...named.map(x=>x.id)]};
+  const answer=async (ev,record,then)=>{
+    const b=ev.target; b.disabled=true; note.textContent="Saving…";
+    try{ await rememberMerge(A.chat.id,record); then(); }
+    catch(e){ note.textContent="Failed: "+e.message; b.disabled=false; }
+  };
+
+  const list=el("div",{class:"sub",style:"margin-top:6px"});
+  for(const t of pending) list.append(el("div",{},
+    `${t.name?`“${t.name}”`:`thread ${t.id}`} · ${N(t.n)} message${t.n===1?"":"s"}`,
+    t.first? ` · ${D(t.first)} → ${D(t.last)}`:"",
+    t.roster?.length? ` · ${t.roster.join(", ")}`:""));
+
+  return el("div",{class:"flag warn"},el("div",{},
+    el("b",{},"Merge? "),
+    `${pending.length===1?"Another thread here has":`${pending.length} other threads here have`} `+
+    `${N(total)} message${total===1?"":"s"} — about ${share<0.05?"<0.1":share.toFixed(1)}% of this `+
+    "conversation, missing from everything below. ",
+    named.length? "The roster is not the same, and one group with people joining and leaving looks "+
+      "exactly like a chat that deliberately excludes someone, so this is never decided for you."
+      : "Same people, a different chat row — a recreated group, a rename, or an SMS fork.",
+    list,
+    el("div",{class:"row",style:"margin-top:8px;align-items:center;flex-wrap:wrap"},
+      el("button",{class:"act primary",onclick:ev=>answer(ev,
+        {merge:true,ids:body.ids,dismissed:saved?.dismissed??[]},
+        ()=>openChat(A.chat.id,body))},"Yes — one conversation"),
+      el("button",{class:"act",onclick:ev=>answer(ev,
+        {merge:false,ids:saved?.ids??[],
+         dismissed:[...new Set([...(saved?.dismissed??[]),...pending.map(x=>x.id)])]},
+        ()=>openChat(A.chat.id))},"No — keep separate"),
+      note)));
 }
 
 function render(A){
   const m=$("#main"); m.innerHTML=""; resetCards();
   const P=A.perPerson;
 
+  const q=mergeQuestion(A); if(q) m.append(q);
   m.append(el("div",{class:"head"},el("h1",{},A.chat.name),
     el("span",{class:"sub"},`${N(A.total)} messages · ${A.people.length} people · ${D(A.first)} → ${D(A.last)}`)));
   if(A.aka?.length) m.append(el("p",{class:"sub"},"also known as ",A.aka.map(n=>`“${n}”`).join(", ")));
 
   /* merge state */
   if(A.chat.ids.length>1){
-    const f=el("div",{class:"flag info"},el("div",{},
+    const inner=el("div",{},
       el("b",{},`Merged ${A.chat.ids.length} threads. `),
-      A.chat.ids.join(" + ")));
-    m.append(f);
+      A.chat.ids.join(" + "));
+    // An undo for the answered question — the merge itself is a one-way door
+    // otherwise, since the question that offered it is gone once it is done.
+    if(A.namedMerged?.length){
+      const saved=savedMerge(A.chat.id);
+      const note=el("span",{class:"sub"});
+      inner.append(el("div",{class:"row",style:"margin-top:8px;align-items:center;flex-wrap:wrap"},
+        el("button",{class:"act",onclick:async ev=>{
+          ev.target.disabled=true; note.textContent="Saving…";
+          try{
+            await rememberMerge(A.chat.id,{merge:saved?.merge??true,ids:[],
+              dismissed:[...new Set([...(saved?.dismissed??[]),...A.namedMerged.map(x=>x.id)])]});
+            openChat(A.chat.id);
+          }catch(e){ note.textContent="Failed: "+e.message; ev.target.disabled=false; }
+        }},`Separate ${A.namedMerged.length===1?"that thread":"those threads"} again`),note));
+    }
+    m.append(el("div",{class:"flag info"},inner));
     if(A.rostersDiffer){
       const t=el("table",{},el("thead",{},el("tr",{},el("th",{},"thread"),el("th",{},"msgs"),el("th",{},"span"),el("th",{},"roster"))));
       const tb=el("tbody",{});
@@ -646,20 +741,9 @@ function render(A){
         el("p",{class:"sub"},"Per-person totals span the whole merge, so anyone present for only part of it looks quiet — read the per-year chart. Anyone who left is missing from every roster while their messages remain."),
         el("div",{class:"scroll"},t)));
     }
-  } else if(A.siblings?.length){
-    const extra=A.siblings.reduce((s,x)=>s+x.n,0);
-    const share=extra/(A.total+extra)*100;
-    m.append(el("div",{class:"flag warn"},el("div",{},
-      el("b",{},`These same people have ${N(extra)} more messages in ${A.siblings.length} other thread(s). `),
-      `About ${share<0.05?"<0.1":share.toFixed(1)}% of this conversation is missing from everything below.`,
-      mergeControls(A.chat.id,{merge:true,ids:[]},"Merge them"))));
   }
-  if(A.named?.length){
-    m.append(el("div",{class:"flag warn"},el("div",{},
-      el("b",{},`${A.named.length} thread(s) share this name but have a different roster. `),
-      "Could be one group with people joining and leaving — or a chat that deliberately excludes someone. Not merged automatically.",
-      mergeControls(A.chat.id,{merge:false,ids:[A.chat.id,...A.named.map(x=>x.id)]},"Treat as one group"))));
-  }
+  // Both merge tiers are asked once, at the top, by mergeQuestion(). They used
+  // to be two warnings down here that outlived their own answers.
 
   /* tiles */
   const B=A.busiest;
@@ -1439,11 +1523,16 @@ async function renderSettings(){
 
   /* --- reading --- */
   const auto = el("input",{type:"checkbox"});
-  auto.checked = PREFS.get("autoMerge");
-  auto.addEventListener("change",()=>PREFS.set("autoMerge",auto.checked));
+  auto.checked = PREFS.get("combineThreads");
+  // Both halves matter: the sidebar folds the threads into one row and the
+  // report opens merged. Splitting them would let the list promise a total the
+  // report does not show.
+  // Reload the sidebar in place — boot() here would throw the Settings page
+  // away as a side effect of ticking a box on it.
+  auto.addEventListener("change",()=>{ PREFS.set("combineThreads",auto.checked); loadChats(); });
   const label = el("label",{style:"display:flex;gap:9px;align-items:flex-start;cursor:pointer"},
-    auto, el("span",{},el("b",{},"Merge split threads automatically"),
-      el("div",{class:"sub"},"Open a conversation with its sibling threads already folded in — same people, different chat_identifier, from a recreated group, a rename, or an SMS fork.")));
+    auto, el("span",{},el("b",{},"Show split threads as one conversation"),
+      el("div",{class:"sub"},"One sidebar entry per conversation rather than per chat row, opened with its sibling threads folded in — same people, or the same group recreated, renamed, or forked to SMS. Turn this off to see the raw chat rows.")));
   const read = card("Reading conversations", label);
   read.append(el("div",{class:"flag info"},el("div",{},
     el("b",{},"Threads that share a name but not a roster are never merged automatically. "),
@@ -1606,7 +1695,7 @@ async function renderOverview(mount,gen){
       const tr=el("tr",{class:"clickrow"},
         el("td",{},p.name),el("td",{},N(p.n)),el("td",{},N(p.sent)),el("td",{},N(p.received)),
         el("td",{},D(p.first)),el("td",{},D(p.last)));
-      if(p.chats.length) tr.addEventListener("click",()=>openChat(p.chats[0],{merge:true,ids:[]}));
+      if(p.chats.length) tr.addEventListener("click",()=>openChat(p.chats[0]));
       return tr;
     });
     box.append(card("The people you actually message",
@@ -1619,7 +1708,7 @@ async function renderOverview(mount,gen){
       const tr=el("tr",{class:"clickrow"},
         el("td",{},g.name),el("td",{},N(g.n)),el("td",{},N(g.people.length)),
         el("td",{},D(g.first)),el("td",{},D(g.last)));
-      tr.addEventListener("click",()=>openChat(g.id,{merge:true,ids:[]}));
+      tr.addEventListener("click",()=>openChat(g.id));
       return tr;
     });
     box.append(card("Groups",peopleTable(rows,["group","messages","people","first","latest"]),
@@ -1664,21 +1753,24 @@ async function boot(skipSetup){
   sub.title = "Re-copy the snapshot or re-read Contacts";
   sub.onclick = () => renderSetup(st,{refresh:true});
   if(!st.ready || (!skipSetup && (!st.names.found || st.names.count===0))) return renderSetup(st);
-  CHATS=await api("/api/chats?min=200");
-  renderChats(CHATS);
+  await loadChats();
   const m=$("#main"); m.innerHTML=""; resetCards();
   const gen=newPage();
   CUR=null;
   for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current","false");
   m.append(el("h1",{},"Your messages"));
   m.append(el("p",{class:"sub"},`${N(CHATS.length)} conversations with 200+ messages in the sidebar. Everything runs locally; nothing is uploaded.`));
-  const split=CHATS.filter(c=>c.siblings.length), churn=CHATS.filter(c=>!c.siblings.length&&c.named.length);
+  const combined=CHATS.filter(c=>c.combined), split=CHATS.filter(c=>c.siblings.length);
+  const churn=CHATS.filter(c=>pendingNamed(c).length);
+  if(combined.length) m.append(el("div",{class:"flag info"},el("div",{},
+    el("b",{},`${combined.length} conversations occupy more than one chat row. `),
+    "Same people, different chat_identifier — a recreated group, a rename, or an SMS fork. They are listed and read as one; turn that off in Settings to see the raw rows.")));
   if(split.length) m.append(el("div",{class:"flag warn"},el("div",{},
     el("b",{},`${split.length} conversations are split across several chat rows. `),
     "Same people, different chat_identifier — a recreated group, a rename, or an SMS fork. Open one and press Merge, or you'll be reading part of the history.")));
   if(churn.length) m.append(el("div",{class:"flag warn"},el("div",{},
     el("b",{},`${churn.length} share a name with a differently-staffed thread. `),
-    "Never merged automatically — a work group with staff churn looks identical to a chat that deliberately excludes someone.")));
+    "Never merged automatically — a work group with staff churn looks identical to a chat that deliberately excludes someone. Open one and answer the question at the top.")));
   if(st.names.unnamed?.length){
     const big=st.names.unnamed.filter(u=>u.n>=50);
     if(big.length) m.append(el("div",{class:"flag warn"},el("div",{},

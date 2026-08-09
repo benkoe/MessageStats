@@ -179,7 +179,23 @@ async function importSnapshot() {
   return { ok: true, copied, messagesRunning: await messagesRunning() };
 }
 
-function chats({ min = 1, limit = 400 } = {}) {
+/**
+ * The sidebar list.
+ *
+ * `combine` folds each set of strict sibling threads into ONE row — same
+ * canonical roster, or the same `original_group_id`, which is Apple's own
+ * identity for a group across a rename, a recreation or an SMS fork. Two rows
+ * with the same name and no way to tell them apart is not a list of
+ * conversations, it is a list of chat table rows, and picking the wrong one
+ * gives you a confident report about part of a friendship. A folded row shows
+ * the combined count and opens merged, so what the sidebar says and what the
+ * report says are the same number.
+ *
+ * Only the strict tier is folded. Threads that share a *name* but not a roster
+ * stay separate rows and become a question inside the report — see
+ * findSameNameChats() in lib.mjs for why that one can never be automatic.
+ */
+function chats({ min = 1, limit = 400, combine = true } = {}) {
   const d = getDb();
   if (!d) return [];
   const { names, canonical } = identities();
@@ -201,23 +217,61 @@ function chats({ min = 1, limit = 400 } = {}) {
   const extra = chatSummaries(d, rows.flatMap((r) => [...(sib.get(r.id) ?? []), ...(same.get(r.id) ?? [])]));
   const live = (list, self) => (list ?? []).filter((x) => x !== self && (extra.get(x)?.n ?? 0) > 0)
     .map((x) => ({ id: x, n: extra.get(x).n }));
-  const roster = d.prepare(
-    `select h.id id from chat_handle_join j join handle h on h.ROWID = j.handle_id where j.chat_id = ?`
-  );
+  const rosters = chatRosters(d, canonical);
+  const peopleOf = (chatIds) => [...new Set(
+    chatIds.flatMap((id) => [...(rosters.get(id) ?? [])]).map((h) => names.get(h) ?? h)
+  )];
 
-  return rows.map((r) => {
-    const people = [...new Set(roster.all(r.id).map((h) => names.get(canonical(normalizeHandle(h.id))) ?? h.id))];
+  const entry = (r) => {
     const siblings = live(sib.get(r.id), r.id);
     const named = live(same.get(r.id), r.id).filter((x) => !siblings.some((s) => s.id === x.id));
+    const people = peopleOf([r.id]);
     return {
-      id: r.id, n: r.n, people,
+      id: r.id, ids: [r.id], n: r.n, people,
       isGroup: r.style === 43,
       name: r.dn?.trim() || (r.style === 43 ? "(unnamed group)" : people[0] ?? r.ci ?? "?"),
       first: appleMicrosToMs(r.first_us), last: appleMicrosToMs(r.last_us),
-      siblings, named,
+      siblings, named, combined: false,
       missing: siblings.reduce((s, x) => s + x.n, 0),
     };
-  });
+  };
+
+  if (!combine) return rows.map(entry);
+
+  // Rows arrive busiest-first, so the first member of a group seen is the one
+  // whose name and id the folded row carries.
+  const seen = new Set();
+  const out = [];
+  for (const r of rows) {
+    if (seen.has(r.id)) continue;
+    const e = entry(r);
+    const group = (sib.get(r.id) ?? [r.id]).filter((id) => id === r.id || (extra.get(id)?.n ?? 0) > 0);
+    for (const id of group) seen.add(id);
+    if (group.length > 1) {
+      const rest = group.filter((id) => id !== r.id).map((id) => extra.get(id));
+      e.ids = [r.id, ...group.filter((id) => id !== r.id)];
+      e.n = rest.reduce((s, x) => s + x.n, r.n);
+      e.first = appleMicrosToMs(Math.min(r.first_us, ...rest.map((x) => x.first_us)));
+      e.last = appleMicrosToMs(Math.max(r.last_us, ...rest.map((x) => x.last_us)));
+      e.people = peopleOf(group);
+      e.combined = true;
+      // Nothing is being left out any more, so nothing is left to warn about.
+      // Leaving these populated made the landing page count the same 39
+      // conversations twice: once as combined, once as split and unread.
+      e.siblings = [];
+      e.missing = 0;
+      // A same-name-different-roster thread that is inside this group is not a
+      // question any more; one hanging off any member of it still is.
+      e.named = [...new Map(
+        group.flatMap((id) => live(same.get(id), id))
+          .filter((x) => !group.includes(x.id))
+          .map((x) => [x.id, x])
+      ).values()];
+    }
+    out.push(e);
+  }
+  // Folding changes the totals, so the order has to be re-established.
+  return out.sort((a, b) => b.n - a.n);
 }
 
 function chatDetail(chatId, { merge = false, mergeIds = [], top = 10 }) {
@@ -242,16 +296,35 @@ function chatDetail(chatId, { merge = false, mergeIds = [], top = 10 }) {
   )].filter((n) => n !== A.chat.name);
 
   const rosters = chatRosters(d, canonical);
+  // Summaries for every merged id, including the chat that was opened — it is
+  // in neither `siblings` nor `named`, so the biggest row of the roster table
+  // used to print "— msgs, — span", which reads as a broken table.
+  const spans = chatSummaries(d, resolved.ids);
   A.threads = resolved.ids.map((id) => {
-    const s = resolved.siblings.concat(resolved.named).find((x) => x.id === id);
+    const s = spans.get(id);
     return {
-      id, n: s?.n ?? null, first: s?.first ?? null, last: s?.last ?? null,
+      id, n: s?.n ?? null,
+      first: s?.first_us ? appleMicrosToMs(s.first_us) : null,
+      last: s?.last_us ? appleMicrosToMs(s.last_us) : null,
       roster: [...(rosters.get(id) ?? [])].map((h) => names.get(h) ?? h).sort(),
     };
   });
   A.rostersDiffer = new Set(A.threads.map((t) => t.roster.join("|"))).size > 1;
-  A.siblings = resolved.siblings;
-  A.named = resolved.named;
+  // Only what is still *outside* the merge. A banner offering to fold in a
+  // thread that is already folded in is the bug that made "Treat as one group"
+  // look like it had done nothing.
+  A.siblings = resolved.siblings.filter((x) => !resolved.ids.includes(x.id));
+  // Whose roster it is, on the question itself: "same name, different roster"
+  // is unanswerable without seeing the two rosters, and making someone merge
+  // in order to find out is the wrong way round.
+  const nameOfChat = d.prepare(`select display_name dn from chat where ROWID = ?`);
+  const withRoster = (x) => ({
+    ...x, roster: [...(rosters.get(x.id) ?? [])].map((h) => names.get(h) ?? h).sort(),
+    name: nameOfChat.get(x.id)?.dn?.trim() ?? null,
+  });
+  A.named = resolved.named.filter((x) => !resolved.ids.includes(x.id)).map(withRoster);
+  // The same threads on the other side of the answer — what an undo undoes.
+  A.namedMerged = resolved.named.filter((x) => resolved.ids.includes(x.id)).map(withRoster);
   cache.set(key, A);
   return A;
 }
@@ -544,12 +617,22 @@ function readMerges() {
   } catch { return {}; }
 }
 
-function saveMerge({ chatId, merge, ids, forget }) {
+function saveMerge({ chatId, merge, ids, dismissed, forget }) {
   const key = String(Number(chatId));
   if (key === "NaN") throw new Error("no chat id");
   const all = readMerges();
+  // `dismissed` is the other answer to the same question: thread ids the user
+  // has said are NOT this conversation. Without it, "no, keep them separate"
+  // has nowhere to be written down, so the question comes back every single
+  // time the chat is opened — which is the same complaint as a merge that has
+  // to be re-applied on every view.
   if (forget) delete all[key];
-  else all[key] = { merge: Boolean(merge), ids: (ids ?? []).map(Number).filter(Boolean), at: new Date().toISOString() };
+  else all[key] = {
+    merge: Boolean(merge),
+    ids: (ids ?? []).map(Number).filter(Boolean),
+    dismissed: (dismissed ?? []).map(Number).filter(Boolean),
+    at: new Date().toISOString(),
+  };
   writeFileSync(MERGES_FILE, `${JSON.stringify(all, null, 2)}\n`);
   return { ok: true, merges: all };
 }
@@ -722,7 +805,10 @@ const server = createServer((req, res) => {
       const O = overviewData();
       return O ? send(res, 200, O) : send(res, 404, { error: "no database yet" });
     }
-    if (p === "/api/chats") return send(res, 200, chats({ min: Number(qs.get("min") ?? 1), limit: Number(qs.get("limit") ?? 400) }));
+    if (p === "/api/chats") return send(res, 200, chats({
+      min: Number(qs.get("min") ?? 1), limit: Number(qs.get("limit") ?? 400),
+      combine: qs.get("combine") !== "0",
+    }));
 
     const m = p.match(/^\/api\/chat\/(\d+)(\/search|\/around)?$/);
     if (m) {

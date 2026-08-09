@@ -17,8 +17,8 @@
  */
 
 import {
-  arg, bar, chatRosters, day, flag, head, human, loadIdentities, openDb, pad,
-  padL, pct, quote, resolveDbPath, resolveNamesPath
+  appleMicrosToMs, arg, bar, chatRosters, chatSummaries, day, flag, head, human,
+  loadIdentities, openDb, pad, padL, pct, quote, resolveDbPath, resolveNamesPath
 } from "./lib.mjs";
 import { analyze, loadMessages, resolveChats, resolveMe } from "./analyze.mjs";
 
@@ -30,7 +30,10 @@ if (!Number.isInteger(chatId) || chatId <= 0) {
 }
 const TOP = Number(arg(argv, "top") ?? 10);
 // --merge          fold in sibling threads holding exactly the same people
-// --merge 2488,3676  fold in these chat ids explicitly, whatever their rosters
+// --merge 2488,3676  ALSO fold in these chat ids, whatever their rosters. The
+//                    siblings come too — explicit ids used to replace them,
+//                    which quietly made a merged report smaller than the
+//                    unmerged one it was meant to complete.
 const MERGE = flag(argv, "merge");
 const mergeArg = arg(argv, "merge");
 const MERGE_IDS = (mergeArg && !mergeArg.startsWith("--") ? mergeArg : "")
@@ -95,11 +98,17 @@ if (ids.length > 1) {
   const keyOf = (id) => [...(rosters.get(id) ?? [])].sort().join("|");
   if (new Set(ids.map(keyOf)).size > 1) {
     console.log(`\x1b[36m  rosters differ across these threads:\x1b[0m`);
+    // Spans for every id including the one that was asked for: it is in neither
+    // `siblings` nor `named`, and falling back to the whole merge's span
+    // printed the biggest thread as if it covered all of it.
+    const spans = chatSummaries(db, ids);
     for (const id of ids) {
-      const s = siblings.concat(named).find((x) => x.id === id);
+      const s = spans.get(id);
       const who = [...(rosters.get(id) ?? [])].map((h) => names.get(h) ?? h).sort().join(", ");
-      const span = s?.first && s?.last ? `${day(s.first)} → ${day(s.last)}` : `${day(A.first)} → ${day(A.last)}`;
-      console.log(`    ${String(id).padEnd(6)}${span}   ${who || "—"}`);
+      const span = s?.first_us
+        ? `${day(appleMicrosToMs(s.first_us))} → ${day(appleMicrosToMs(s.last_us))}`
+        : "—";
+      console.log(`    ${String(id).padEnd(6)}${(s?.n ?? 0).toLocaleString().padStart(7)}  ${span}   ${who || "—"}`);
     }
     console.log(
       `\x1b[36m  Per-person totals below span the whole merge, so someone present\x1b[0m` +
@@ -118,15 +127,18 @@ if (ids.length > 1) {
   );
 }
 
-// Softer tier, printed whether or not we merged: same name, different roster.
-if (named.length && !MERGE_IDS.length) {
-  const extra = named.reduce((s, x) => s + x.n, 0);
+// Softer tier: same name, different roster. Only the threads still outside the
+// merge — offering to fold in one that is already folded in is how the web UI's
+// version of this warning came to look like a button that did nothing.
+const pendingNamed = named.filter((s) => !ids.includes(s.id));
+if (pendingNamed.length) {
+  const extra = pendingNamed.reduce((s, x) => s + x.n, 0);
   console.log(
-    `\n\x1b[33m?  ${named.length} other thread(s) share this name but have a different ` +
-      `roster: ${listOf(named)}\x1b[0m` +
+    `\n\x1b[33m?  ${pendingNamed.length} other thread(s) share this name but have a different ` +
+      `roster: ${listOf(pendingNamed)}\x1b[0m` +
       `\n   ${extra.toLocaleString()} messages. Could be one group with people joining and` +
       `\n   leaving — or a deliberately separate chat. NOT merged automatically.` +
-      `\n   If it is the same group:  node stats.mjs --chat ${chatId} --merge ${[chatId, ...named.map((s) => s.id)].join(",")}`
+      `\n   If it is the same group:  node stats.mjs --chat ${chatId} --merge ${[chatId, ...pendingNamed.map((s) => s.id)].join(",")}`
   );
 }
 

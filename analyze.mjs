@@ -171,7 +171,13 @@ export function resolveChats(db, { chatId, merge = false, mergeIds = [], canonic
   const siblings = siblingIds.filter(has);
   const named = namedIds.filter(has);
   const explicit = explicitIds.filter(has);
-  const ids = mergeIds.length ? [chatId, ...explicit] : merge ? [chatId, ...siblings] : [chatId];
+  // Explicit ids ADD to the siblings, they do not replace them. It used to be
+  // `mergeIds.length ? [chatId, ...explicit] : ...`, which meant answering the
+  // softer same-name-different-roster question silently *dropped* the strict
+  // siblings: one ThomDigital thread merged with a 1-message SMS fork and threw
+  // away the 5,872-message sibling it had been reading a moment earlier. The
+  // report said "Merged 2 threads" and was smaller than before the merge.
+  const ids = [...new Set([chatId, ...(merge ? siblings : []), ...explicit])];
 
   const summary = (id) => {
     const s = stats.get(id);
