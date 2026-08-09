@@ -710,6 +710,30 @@ function render(A){
     `Fastest reply: ${(D2.fastest.ms/1000).toFixed(1)}s — ${D2.fastest.reply.who} to ${D2.fastest.to.who}, ${D(D2.fastest.reply.ms)}.`));
   m.append(cd);
 
+  /* what the links actually were */
+  if(A.richLinks){
+    const L=A.richLinks;
+    const lc=card("What the links were",null,
+      `${N(L.titled)} of ${N(L.cards)} link previews still carry the title, site and summary iMessage saved when the card was built. Read from the database — nothing is fetched, so no one learns what you shared.`);
+    if(L.topSites.length)
+      lc.append(el("div",{style:"margin-bottom:10px"},L.topSites.map(s=>chip(s.site,N(s.n)))));
+    lc.append(el("h3",{style:"margin:12px 0 4px"},"Most recent"));
+    for(const x of L.recent)
+      lc.append(el("div",{class:"msg"},
+        el("div",{class:"m-h"},`${x.who} · ${D(x.ms)}${x.site?` · ${x.site}`:""}`),
+        el("div",{class:"m-t"},x.title)));
+    if(L.reposts.length){
+      lc.append(el("h3",{style:"margin:14px 0 4px"},"Sent more than once"));
+      for(const x of L.reposts)
+        lc.append(el("div",{class:"msg"},
+          el("div",{class:"m-h"},`${x.n}× · ${x.who.join(", ")} · ${D(x.first)} → ${D(x.last)}`),
+          el("div",{class:"m-t"},x.title)));
+      lc.append(el("p",{class:"sub",style:"margin-top:6px"},
+        "One person twice is usually forgetting. Two people is finding it separately."));
+    }
+    m.append(lc);
+  }
+
   /* how it's sent — only when the chat actually mixes services */
   if(A.services){
     const S=A.services, cols=S.totals.map(t=>t.name);

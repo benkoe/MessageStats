@@ -219,6 +219,27 @@ if (A.people.length > 2) {
   console.log(`  (blank = fewer than 5 replies to go on)`);
 }
 
+/* ---------------- what the links were ---------------- */
+
+if (A.richLinks) {
+  const L = A.richLinks;
+  head("What the links were");
+  console.log(`  ${L.titled.toLocaleString()} of ${L.cards.toLocaleString()} previews kept their title and site.`);
+  console.log(`  Read from the database — nothing is fetched, so no one learns what you shared.\n`);
+  if (L.topSites.length) {
+    console.log(`  ${L.topSites.map((s) => `${s.site} ${s.n.toLocaleString()}`).join(" · ")}\n`);
+  }
+  for (const x of L.recent.slice(0, 8)) {
+    console.log(`  ${day(x.ms)}  ${pad(x.who, 14)} ${quote(x.title, 60)}${x.site ? `  (${x.site})` : ""}`);
+  }
+  if (L.reposts.length) {
+    console.log(`\n  sent more than once:`);
+    for (const x of L.reposts.slice(0, 5)) {
+      console.log(`    ${x.n}x  ${quote(x.title, 52)} — ${x.who.join(", ")}`);
+    }
+  }
+}
+
 /* ---------------- how it's sent ---------------- */
 
 if (A.services) {

@@ -16,6 +16,7 @@ import {
   findSameNameChats, findSiblingChats, messageText, median, normalizeHandle,
   REAL_MESSAGE_WHERE,
 } from "./lib.mjs";
+import { readArchive } from "./bplist.mjs";
 
 export const TAPBACK_KINDS = {
   2000: "loved", 2001: "liked", 2002: "disliked",
@@ -757,6 +758,77 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     if (ms) inc(attByYear, new Date(ms).getFullYear());
   }
 
+  /* ---- what the links actually were ---- */
+  /**
+   * Every domain histogram elsewhere says people shared 81 things from x.com.
+   * `payload_data` says *what* they were: iMessage archives an `LPLinkMetadata`
+   * — title, site name, summary — when the preview card is built, and keeps it.
+   *
+   * This is captured at send time and stored locally, which is the only reason
+   * it can exist here at all. Fetching a shared URL to get its title would
+   * leak the contents of a private conversation to whoever runs that domain,
+   * and there is no network client in this project by design.
+   *
+   * The URL sits under the dotted key `NS.relative`, not a nested object.
+   */
+  const linkRows = hasColumns(db, "message", "payload_data", "balloon_bundle_id")
+    ? db.prepare(
+        `select m.payload_data pd, m.is_from_me fromMe, h.id handle,
+                ${DATE_TO_MICROS.replace("date", "m.date")} us
+           from message m
+           join chat_message_join j on j.message_id = m.ROWID
+           left join handle h on h.ROWID = m.handle_id
+          where j.chat_id in (${holes})
+            and m.balloon_bundle_id = 'com.apple.messages.URLBalloonProvider'
+            and m.payload_data is not null`
+      ).all(...ids)
+    : [];
+
+  const sites = new Map(), byUrl = new Map();
+  const titled = [];
+  for (const r of linkRows) {
+    let md;
+    // A corrupt or unfamiliar archive must not take the whole report down.
+    try { md = readArchive(Buffer.from(r.pd)); } catch { continue; }
+    const meta = md?.richLinkMetadata ?? md;
+    if (!meta || typeof meta !== "object") continue;
+    // Titles from social cards carry their own layout — "Name (@handle)\n3K
+    // likes · 26 replies" — which breaks any single-line rendering.
+    const title = typeof meta.title === "string" ? meta.title.replace(/\s+/g, " ").trim() : "";
+    if (!title) continue;                       // placeholder card, no metadata
+    const url = typeof meta.URL?.["NS.relative"] === "string" ? meta.URL["NS.relative"] : null;
+    const site = typeof meta.siteName === "string" && meta.siteName.trim() ? meta.siteName.trim() : null;
+    const who = label(r.handle, r.fromMe === 1);
+    const ms = appleMicrosToMs(r.us);
+    if (site) inc(sites, site);
+    const entry = { title, site, url, who, ms, summary: typeof meta.summary === "string" ? meta.summary.trim() : null };
+    titled.push(entry);
+    if (url) {
+      if (!byUrl.has(url)) byUrl.set(url, []);
+      byUrl.get(url).push(entry);
+    }
+  }
+  titled.sort((a, b) => b.ms - a.ms);
+  const richLinks = titled.length === 0 ? null : {
+    // Cards without metadata are real links that simply never resolved a
+    // preview; saying how many keeps the titled list from reading as all of them.
+    titled: titled.length,
+    cards: linkRows.length,
+    topSites: topN(sites, 12).map(([site, n]) => ({ site, n })),
+    recent: titled.slice(0, 12).map(({ title, site, who, ms, url }) => ({ title, site, who, ms, url })),
+    // The same link sent twice is usually one person forgetting, or two people
+    // finding it independently — both are funnier than a domain count.
+    reposts: [...byUrl.entries()]
+      .filter(([, xs]) => xs.length > 1)
+      .map(([url, xs]) => ({
+        url, title: xs[0].title, site: xs[0].site, n: xs.length,
+        who: [...new Set(xs.map((x) => x.who))],
+        first: Math.min(...xs.map((x) => x.ms)), last: Math.max(...xs.map((x) => x.ms)),
+      }))
+      .sort((a, b) => b.n - a.n || b.last - a.last)
+      .slice(0, 8),
+  };
+
   /* ---- how it was sent: iMessage, SMS, RCS ---- */
   /**
    * `service` is per message, so a green bubble is really "this person was on
@@ -1021,6 +1093,7 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
         .map(([g, n]) => ({ n, msg: msgRef(byGuid.get(g)) }))
         .filter((x) => x.msg),
     },
+    richLinks,
     services,
     replyGraph,
     groupHistory: history.length || departed.length ? { events: history, departed } : null,
