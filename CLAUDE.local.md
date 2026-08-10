@@ -468,9 +468,10 @@ answer. If two presets can't be told apart from their output, delete one.
 
 ### The assistant: tone presets, and never present a cut-off answer as whole
 
-`TONES` in `serve.mjs` appends a tone instruction to `AI_SYSTEM`. The grounding
-rules stay in front of every preset, so no tone can license inventing a figure
-to land a joke — "roast them" still has to roast them with real numbers.
+`TONES` in `serve.mjs` appends a tone instruction to `systemFor(scope, preset)`
+— a scope line, then `AI_RULES`, then the preset. The grounding rules stay in
+front of every preset, so no tone can license inventing a figure to land a joke
+— "roast them" still has to roast them with real numbers.
 
 `ask()` in `llm.mjs` returns `{ text, truncated }` rather than a bare string.
 An answer that stopped at the token ceiling is indistinguishable from a
@@ -484,6 +485,51 @@ complete one and is worth nothing, so it must be visible.
 
 Export builds the Markdown in the page and downloads a Blob — the server never
 sees it, which keeps the local-only promise true for exports too.
+
+### The assistant on ✨ Everything: a second scope, not a second feature
+
+The landing page had every cross-conversation number in the app and no way to
+ask anything about them — the one question people actually arrive with ("who am
+I drifting away from") was on screen as a table and unaskable. `askPanel` now
+takes a **target**: the key an in-flight ask is filed under, the placeholder,
+the suggestions, and a `body()` that says what goes on the wire. `chatAsk(A)`
+and `libraryAsk()` are the two. Everything else — `ASKS`, tones, history, copy,
+export, the generation-safe adoption of a running ask — is one implementation,
+because two would have drifted inside a week.
+
+Five things that are deliberate, and would each be a bug if done the obvious
+way:
+
+- **The library context is `libraryBrief(O)`, built from the cached
+  `overviewData()`.** Not a bigger `brief()`: `overview()` reads no message
+  text at all, by design, and re-deriving one brief per conversation would mean
+  opening every message in the database to answer "who do I talk to most". It
+  costs nothing the page has not already paid for, and comes out ~7 KB.
+- **The prompt says what is missing.** `AI_SCOPES.library` states there is no
+  message text, no words, no emoji and nothing to quote. A model asked "what do
+  we talk about" with no quotes available will happily invent one; the absence
+  has to be named, not left to be inferred. It also points the question at
+  opening a single conversation, which is where that answer lives.
+- **`chatId` is the string `"library"`.** It shares `ai-history.local.json`
+  and the `ASKS` map with chat asks, so it needs a key no chat ROWID can
+  collide with. The history filter compares as a string already.
+- **The sidebar dot works from the Everything button.** `markAsking()` targets
+  `#ovbtn` for that key — it is a `.chat` with no `data-id`, so the existing
+  selector found nothing and a running library ask was invisible the moment you
+  clicked away.
+- **It mounts inside `renderOverview`'s box, after the data lands.** It answers
+  *from* those numbers, so a failed scan means there is nothing to ask about;
+  and mounting it early would leave someone typing into a box that two seconds
+  of arriving cards then shove down the screen.
+
+The search field is not rendered at all for the library, because `search()` is
+per-chat and there is no library-wide one to run. A disabled box that looks like
+a feature is worse than no box.
+
+The suggestion chips are different **in kind**, the same rule as the tone
+presets: at library scale the questions worth asking are comparisons — one
+person against another, or against their own past — which is precisely what the
+overview supports and a single conversation cannot.
 
 ### WKWebView cannot download anything — the Export button did nothing
 
@@ -706,7 +752,13 @@ out of the attachment/edit/read-receipt work:
   emoji) shipped to both frontends and none of it reached the assistant, which
   then answered questions about numbers on the very page the user was reading
   from a context that lacked them. When adding a section, teach `brief()` in
-  the same commit.
+  the same commit. **There are two now** — `libraryBrief()` stands in the same
+  relation to the Everything page, so a new card there is the same obligation.
+  It carries one thing the page does not: `overview()`'s groups are chat rows,
+  not conversations, so a renamed or recreated group appears twice under one
+  name with its history split. On the page you can see the two date ranges
+  adjoin; a model reading a list cannot, and "they stopped talking in October"
+  is exactly the wrong conclusion. The header line says so.
 - **`other_handle` is a handle ROWID, not a handle string.** It names the
   person a group event acted on, and joining it against `handle.id` as text
   returns nothing at all — which reads as "the column is empty" and is the
