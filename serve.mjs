@@ -345,19 +345,43 @@ function overviewData() {
   return O;
 }
 
-/** Full-text search inside one conversation, with surrounding messages. */
-function search(chatId, { q, merge, mergeIds, who, from, to, limit = 60, context = 2 }) {
+/**
+ * A `YYYY-MM-DD` filter bound, in **this machine's timezone** — as milliseconds.
+ * `Date.parse("2025-02-09")` reads a bare date as UTC, so on a UTC-5 machine the
+ * range ended at 19:00 local on its own last day and began at 19:00 the evening
+ * before its first: an evening message on the boundary day silently fell out.
+ * `end` moves to the following local midnight, so the range is inclusive of the
+ * whole day the user typed.
+ */
+function dayBound(s, end = false) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s ?? "").trim());
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(d.getTime())) return null;
+  if (end) d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+/**
+ * Full-text search inside one conversation, with surrounding messages.
+ *
+ * `total`/`byMonth`/`byPerson` describe **every** hit; `hits` is one page of
+ * them, newest first, so a 455-hit search is readable past the first screenful.
+ * Returning only the newest 60 with no offset was indistinguishable from a
+ * search that had found 60.
+ */
+function search(chatId, { q, merge, mergeIds, who, from, to, limit = 60, offset = 0, context = 2 }) {
   const d = getDb();
-  if (!d || !q) return { hits: [], total: 0 };
+  if (!d || !q) return { hits: [], total: 0, offset: 0, limit, hasMore: false };
   const { names, canonical } = identities();
   const resolved = resolveChats(d, { chatId, merge, mergeIds, canonical });
-  if (!resolved) return { hits: [], total: 0 };
+  if (!resolved) return { hits: [], total: 0, offset: 0, limit, hasMore: false };
   const meName = resolveMe(d, resolved.ids, { names, canonical });
   const { msgs } = loadMessages(d, resolved.ids, { names, canonical, meName });
 
   const needle = q.toLowerCase();
-  const fromMs = from ? Date.parse(from) : -Infinity;
-  const toMs = to ? Date.parse(to) + 86_400_000 : Infinity;
+  const fromMs = dayBound(from) ?? -Infinity;
+  const toMs = dayBound(to, true) ?? Infinity;
   const hits = [];
   for (let i = 0; i < msgs.length; i += 1) {
     const m = msgs[i];
@@ -378,7 +402,13 @@ function search(chatId, { q, merge, mergeIds, who, from, to, limit = 60, context
   }
   const byPerson = {};
   for (const h of hits) byPerson[h.who] = (byPerson[h.who] ?? 0) + 1;
-  return { total: hits.length, byMonth, byPerson, hits: hits.slice(-limit).reverse() };
+  hits.reverse();                                    // newest first, then page
+  const start = Math.min(Math.max(0, offset), hits.length);
+  const page = hits.slice(start, start + limit);
+  return {
+    total: hits.length, byMonth, byPerson,
+    offset: start, limit, hits: page, hasMore: start + page.length < hits.length,
+  };
 }
 
 /** Messages around a moment — for clicking into a peak day or a stat. */
@@ -815,9 +845,22 @@ const server = createServer((req, res) => {
       const id = Number(m[1]);
       const opts = { merge: qs.get("merge") === "1", mergeIds: nums(qs.get("ids")) };
       if (m[2] === "/search") {
+        // Clamped rather than trusted: these come off a query string, and an
+        // unbounded limit or context would build the whole conversation into
+        // one JSON reply.
+        // `Number(null)` is 0, not NaN — so an absent parameter used to clamp to
+        // the floor and every search came back one hit long.
+        const clamp = (v, dflt, lo, hi) => {
+          if (v == null || v === "") return dflt;
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.trunc(n))) : dflt;
+        };
         return send(res, 200, search(id, {
           ...opts, q: qs.get("q") ?? "", who: qs.get("who") || null,
           from: qs.get("from") || null, to: qs.get("to") || null,
+          limit: clamp(qs.get("limit"), 60, 1, 200),
+          offset: clamp(qs.get("offset"), 0, 0, 1e6),
+          context: clamp(qs.get("context"), 2, 0, 10),
         }));
       }
       if (m[2] === "/around") return send(res, 200, around(id, { ...opts, at: qs.get("at") }));

@@ -177,6 +177,19 @@ button.act:disabled{opacity:.55;cursor:default}
 .msg .m-t{white-space:pre-wrap;word-break:break-word}
 .msg.hit{background:color-mix(in oklab,var(--s4) 16%,transparent);border-radius:6px;padding:6px 8px}
 .ctx{opacity:.62;font-size:12.5px}
+/* One result = one hit plus the lines around it. Without the rule grouping them
+   the context lines read as results that don't contain the search term, which
+   is exactly how it was reported. The rule says "these belong to that one". */
+.hitblock{margin:14px 0 14px 2px;padding-left:11px;
+  border-left:2px solid color-mix(in oklab,var(--s4) 45%,var(--ring))}
+.hitblock .msg:last-child{border-bottom:0}
+mark{background:color-mix(in oklab,var(--s4) 50%,transparent);color:inherit;
+  border-radius:3px;padding:0 2px}
+/* Year jumps: the native date popup steps one month per click, so reaching a
+   year three back is 40 of them. */
+button.chip{cursor:pointer;font:inherit;color:inherit;line-height:1.5}
+button.chip[aria-pressed=true]{border-color:var(--s1);
+  background:color-mix(in oklab,var(--s1) 18%,var(--surface));font-weight:600}
 button.act{padding:9px 16px;border-radius:999px;border:1px solid var(--ring);background:var(--surface);
   cursor:pointer;font-weight:600;box-shadow:var(--lift);
   transition:transform .14s ease, box-shadow .14s ease, background .14s ease}
@@ -290,7 +303,14 @@ function markdown(text){
 const N = n=>(n??0).toLocaleString();
 const pct = (a,b)=> b? (a/b*100).toFixed(1)+"%" : "—";
 const D = ms => new Date(ms).toISOString().slice(0,10);
-const DT = ms => new Date(ms).toISOString().slice(0,16).replace("T"," ");
+/* Local, unlike D() above: DT stamps a single real message, and a search
+   filtered to "up to the 9th" that then prints a hit as the 10th — because the
+   label was UTC and the filter was not — reads as the filter being ignored.
+   D() stays UTC because the day buckets it labels are bucketed UTC; changing
+   that shifts every historical number. */
+const DT = ms => {const d=new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} `
+    +`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;};
 const SIZE = b=> b>=1e9? (b/1e9).toFixed(1)+" GB" : b>=1e6? Math.round(b/1e6)+" MB" : Math.round(b/1e3)+" KB";
 const dur = ms=>{const s=Math.round(ms/1000); if(s<60)return s+"s"; const m=Math.round(s/60);
   if(m<60)return m+"m"; const h=Math.floor(m/60); if(h<48)return `${h}h ${m%60}m`; return `${Math.floor(h/24)}d ${h%24}h`;};
@@ -1457,40 +1477,162 @@ function personTable(P,A){
 }
 
 /* ---------- search ---------- */
+const SEARCH_PAGE=60;
+/** A local `YYYY-MM-DD` — what an `input[type=date]` wants, and what the server
+ *  now reads as a local-timezone bound rather than a UTC one. */
+const isoDay=ms=>{const d=new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+
+/**
+ * The filters are applied by the server, so results on screen that no longer
+ * match the boxes above them are a lie — and that was the bug: typing a date
+ * left the previous, unfiltered answer sitting there looking authoritative.
+ * Every control re-runs the search, and the header states the range that was
+ * actually applied.
+ */
 function searchPanel(A){
   const q=el("input",{type:"search",placeholder:"Search this conversation…"});
   const who=el("select",{},el("option",{value:""},"anyone"),...A.people.map(p=>el("option",{value:p},p)));
-  const from=el("input",{type:"date"}), to=el("input",{type:"date"});
-  const out=el("div",{});
-  const run=async()=>{
-    if(!q.value.trim()){ out.innerHTML=""; return; }
-    out.innerHTML='<p class="muted">Searching…</p>';
-    const p=new URLSearchParams({q:q.value});
-    if(OPT.merge)p.set("merge","1"); if(OPT.ids?.length)p.set("ids",OPT.ids.join(","));
-    if(who.value)p.set("who",who.value); if(from.value)p.set("from",from.value); if(to.value)p.set("to",to.value);
-    const r=await api(`/api/chat/${A.chat.id}/search?${p}`);
-    out.innerHTML="";
-    out.append(el("p",{class:"sub"},`${N(r.total)} matching messages · `,
-      Object.entries(r.byPerson).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k} ${N(v)}`).join(" · ")));
-    const ms=Object.keys(r.byMonth).sort();
-    if(ms.length>1) out.append(areaChart(ms,ms.map(k=>r.byMonth[k]),{h:110}));
+  const lo=isoDay(A.first), hi=isoDay(A.last);
+  // min/max also constrain the native calendar, so it can't wander off into
+  // years this conversation doesn't cover.
+  const from=el("input",{type:"date",min:lo,max:hi,"aria-label":"From date"});
+  const to=el("input",{type:"date",min:lo,max:hi,"aria-label":"To date"});
+  const ctx=el("select",{"aria-label":"Lines of context"},
+    el("option",{value:"0"},"no context"),el("option",{value:"2"},"± 2 lines"),
+    el("option",{value:"5"},"± 5 lines"));
+  ctx.value="2";
+
+  const head=el("div",{}), out=el("div",{}), more=el("div",{});
+  let seq=0, shown=0, needle="", lowest=Infinity;
+
+  const clampDay=d=>d<lo?lo:d>hi?hi:d;
+  const chips=[];
+  const setRange=(f,t,btn)=>{
+    from.value=f?clampDay(f):""; to.value=t?clampDay(t):"";
+    for(const c of chips) c.setAttribute("aria-pressed",String(c===btn));
+    if(q.value.trim()) run();
+  };
+  const chip=(label,f,t)=>{
+    const b=el("button",{class:"chip",type:"button","aria-pressed":"false"},label);
+    b.addEventListener("click",()=>setRange(f,t,b));
+    chips.push(b); return b;
+  };
+  const ranges=el("div",{class:"row",style:"margin-bottom:10px"},
+    el("span",{class:"muted",style:"font-size:12px"},"Jump to:"),
+    chip("All time","",""),
+    ...A.years.map(y=>chip(String(y),`${y}-01-01`,`${y}-12-31`)));
+  chips[0].setAttribute("aria-pressed","true");
+  // Hand-editing a date is a deliberate choice; drop the chip highlight so the
+  // row never claims a range that isn't the one in the boxes.
+  for(const d of [from,to]) d.addEventListener("input",()=>{
+    for(const c of chips) c.setAttribute("aria-pressed","false");
+  });
+
+  const rangeNote=()=>{
+    const bits=[];
+    if(who.value) bits.push(who.value);
+    if(from.value||to.value) bits.push(`${from.value||lo} → ${to.value||hi}`);
+    return bits.length? ` · filtered to ${bits.join(", ")}` : "";
+  };
+
+  const render=(r,append)=>{
+    if(!append){
+      out.innerHTML=""; head.innerHTML=""; shown=0; lowest=Infinity;
+      const people=Object.entries(r.byPerson||{}).sort((a,b)=>b[1]-a[1])
+        .map(([k,v])=>`${k} ${N(v)}`).join(" · ");
+      head.append(el("p",{class:"sub"},
+        `${N(r.total)} matching messages${people?" · "+people:""}${rangeNote()}`));
+      const ms=Object.keys(r.byMonth||{}).sort();
+      if(ms.length>1) head.append(areaChart(ms,ms.map(k=>r.byMonth[k]),{h:110}));
+    }
+    // Two hits a line apart have overlapping context windows, so drawing each
+    // one whole printed the same three messages twice — which is most of why
+    // the list looked full of rows that don't contain the term. Lay the page
+    // out by message index instead: each message drawn once, and hits whose
+    // windows touch share one block. `h.i` indexes the conversation, so
+    // context positions are h.i - before.length + k and h.i + 1 + k.
+    const lines=new Map();
     for(const h of r.hits){
-      const blk=el("div",{style:"margin:12px 0"});
-      for(const b of h.before) blk.append(msgEl(b,"ctx"));
-      blk.append(msgEl(h,"hit"));
-      for(const a of h.after) blk.append(msgEl(a,"ctx"));
+      h.before.forEach((b,k)=>{const i=h.i-h.before.length+k; if(!lines.has(i))lines.set(i,{m:b,hit:false});});
+      h.after.forEach((a,k)=>{const i=h.i+1+k; if(!lines.has(i))lines.set(i,{m:a,hit:false});});
+    }
+    for(const h of r.hits) lines.set(h.i,{m:h,hit:true});   // a hit outranks context
+    // Later pages are older, so anything at or above the last page's floor is
+    // already on screen.
+    const idx=[...lines.keys()].filter(i=>i<lowest).sort((a,b)=>a-b);
+    if(idx.length) lowest=idx[0];
+    const runs=[];
+    for(const i of idx){
+      const last=runs[runs.length-1];
+      if(last && i===last[last.length-1]+1) last.push(i); else runs.push([i]);
+    }
+    for(const run of runs.reverse()){                        // newest block first
+      const blk=el("div",{class:"hitblock"});
+      for(const i of run){ const {m,hit}=lines.get(i); blk.append(msgEl(m,hit?"hit":"ctx",hit?needle:null)); }
       out.append(blk);
     }
+    shown+=r.hits.length;
+    more.innerHTML="";
     if(!r.total) out.append(el("p",{class:"muted"},"Nothing found."));
+    // 60 of 455 with nothing saying so reads as "it found 60". Say so, and
+    // give it somewhere to go.
+    else if(r.hasMore) more.append(el("button",{class:"act",onclick:()=>run(true)},
+      `Show ${SEARCH_PAGE} more — ${N(shown)} of ${N(r.total)} shown`));
+    else if(r.total>SEARCH_PAGE) more.append(el("p",{class:"muted"},`All ${N(r.total)} shown.`));
   };
+
+  async function run(append=false){
+    const term=q.value.trim();
+    if(!term){ head.innerHTML=""; out.innerHTML=""; more.innerHTML=""; shown=0; lowest=Infinity; return; }
+    const my=++seq;                                  // a newer search wins
+    if(append) more.innerHTML='<p class="muted">Loading…</p>';
+    else { head.innerHTML='<p class="muted">Searching…</p>'; out.innerHTML=""; more.innerHTML=""; }
+    const p=new URLSearchParams({q:term,limit:String(SEARCH_PAGE),
+      offset:String(append?shown:0),context:ctx.value});
+    if(OPT.merge)p.set("merge","1"); if(OPT.ids?.length)p.set("ids",OPT.ids.join(","));
+    if(who.value)p.set("who",who.value); if(from.value)p.set("from",from.value); if(to.value)p.set("to",to.value);
+    let r;
+    try{ r=await api(`/api/chat/${A.chat.id}/search?${p}`); }
+    catch(e){
+      if(my!==seq) return;
+      head.innerHTML=""; more.innerHTML="";
+      out.innerHTML=""; out.append(el("p",{class:"muted"},`Search failed: ${e.message}`));
+      return;
+    }
+    if(my!==seq) return;
+    needle=term;
+    render(r,append);
+  }
+
   q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
+  for(const c of [who,from,to,ctx]) c.addEventListener("change",()=>{ if(q.value.trim()) run(); });
+
   return el("div",{class:"card"},el("h2",{},"Search"),
     el("p",{class:"sub"},"Find any phrase and read it in context — the thing the terminal can't do without writing a throwaway script."),
-    el("div",{class:"row",style:"margin-bottom:10px"},q,who,from,to,el("button",{class:"act primary",onclick:run},"Search")),
-    out);
+    el("div",{class:"row",style:"margin:10px 0 8px"},q,who,from,to,ctx,
+      el("button",{class:"act primary",onclick:()=>run()},"Search")),
+    ranges, head, out, more);
 }
-const msgEl=(m,cls)=>el("div",{class:"msg "+(cls||"")},
-  el("div",{class:"m-h"},`${m.who} · ${DT(m.ms)}`),el("div",{class:"m-t"},m.text));
+/** Highlight every occurrence of the term. DOM nodes only — the text is
+ *  somebody's message, and it never becomes markup. */
+function markUp(text,needle){
+  const frag=document.createDocumentFragment();
+  const n=(needle||"").toLowerCase();
+  if(!n){ frag.append(text); return frag; }
+  const hay=text.toLowerCase();
+  let i=0,j;
+  while((j=hay.indexOf(n,i))!==-1){
+    if(j>i) frag.append(text.slice(i,j));
+    frag.append(el("mark",{},text.slice(j,j+n.length)));
+    i=j+n.length;
+  }
+  frag.append(text.slice(i));
+  return frag;
+}
+const msgEl=(m,cls,needle)=>el("div",{class:"msg "+(cls||"")},
+  el("div",{class:"m-h"},`${m.who} · ${DT(m.ms)}`),
+  el("div",{class:"m-t"}, needle? markUp(m.text,needle) : m.text));
 
 /* ---------- settings ---------- */
 async function renderSettings(){
