@@ -142,6 +142,13 @@ Ask questions about a conversation in plain English — "who wins arguments",
 matrices, signature words, rhythm, plus a handful of quotes the stats point at.
 Roughly 6 KB per question.
 
+**It sits on ✨ Everything too**, where the question is about your whole
+library rather than one thread: who you're drifting away from, who you never
+got back to, how the years compare. That context is built from the overview,
+which reads **no message text at all** — so it is counts and dates only, with
+nothing to quote, and the assistant is told to say so rather than invent
+something. Ask about what was actually *said* inside one conversation.
+
 **Set it up in the browser** — open the Ask panel at the bottom of any
 conversation, choose a provider, paste a key, and press **Load models**. It asks
 the provider what it actually has and gives you a dropdown, so you never type a

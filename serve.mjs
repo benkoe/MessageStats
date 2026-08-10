@@ -439,8 +439,7 @@ function around(chatId, { at, merge, mergeIds, span = 40 }) {
 
 /* ---------------- the assistant ---------------- */
 
-const AI_SYSTEM = `You are analysing one iMessage conversation for the person who owns it.
-You are given computed statistics, not raw message history — so ground every claim in the
+const AI_RULES = `You are given computed statistics, not raw message history — so ground every claim in the
 numbers you were given and never invent a quote, a name, or a figure.
 
 What good looks like:
@@ -456,8 +455,31 @@ Answer the whole question. If it asks about the people in the chat, cover every
 one of them rather than the first few — a partial list is a wrong answer.`;
 
 /**
- * Tone presets. Each is appended to AI_SYSTEM; the grounding rules above always
- * survive, so no preset can license inventing a number to land a joke.
+ * The one line that changes with scope, in front of the shared rules.
+ *
+ * The library scope needs its own because the chat one is a lie there — "this
+ * conversation" is a hundred of them — and because the library context carries
+ * no message text at all. That is worth saying in the prompt rather than
+ * hoping the model notices the absence: a model asked "what do we talk about"
+ * with nothing to quote will happily invent something to quote.
+ */
+const AI_SCOPES = {
+  chat: "You are analysing one iMessage conversation for the person who owns it.",
+  library: `You are analysing someone's whole iMessage history — every conversation at once.
+This context is counts and dates only. It contains no message text, no words, no emoji and no
+quotes, because the overview it comes from never reads a single message. So never quote anyone,
+never characterise what was said, and answer questions about content by saying that opening one
+conversation is where that lives.
+It is a bird's-eye view: who this person talks to, how much, and how that has moved over the
+years. Compare people to each other and to their own past — that is what these numbers support.`,
+};
+
+const systemFor = (scope, preset) => `${AI_SCOPES[scope] ?? AI_SCOPES.chat}\n${AI_RULES}\n\n${preset.prompt}`;
+
+/**
+ * Tone presets. Each is appended to the scope line and AI_RULES; the grounding
+ * rules always survive, so no preset can license inventing a number to land a
+ * joke.
  *
  * "facts" is first because it is the honest default for reading statistics; the
  * rest exist because the same numbers are much funnier read aloud by someone
@@ -597,6 +619,64 @@ function brief(A, { search } = {}) {
 }
 
 /**
+ * The same job for the whole library — what the Everything page is reading.
+ *
+ * Deliberately not a bigger brief(): overview() reads no message text at all,
+ * by design, and re-deriving one per conversation would mean opening every
+ * message in the database to answer "who do I talk to most". So this carries
+ * exactly what is on the page, and says out loud what it does not have.
+ *
+ * The same rule as brief(): whatever a card shows, this must carry. A number
+ * on screen that is missing here produces a confidently incomplete answer
+ * about the very page the question was typed into.
+ */
+function libraryBrief(O) {
+  const L = [];
+  const d = day;
+  const pc = (a, b) => (b ? `${((a / b) * 100).toFixed(1)}%` : "—");
+  const span = (a, b) => `${d(a)}→${d(b)}`;
+
+  L.push(`WHOLE LIBRARY: ${O.total} messages across ${O.chats} conversations, ${span(O.first, O.last)} (${O.spanDays} days, ${O.perDay.toFixed(1)}/day)`);
+  L.push(`  ${O.sent} sent (${pc(O.sent, O.total)}) · ${O.received} received · a message on ${O.activeDays} of ${O.spanDays} days` +
+    (O.busiestDay ? ` · busiest day ${O.busiestDay.day} (${O.busiestDay.n})` : ""));
+  L.push(`All dates are ${TZ}. iMessage stores the instant and no timezone, so messages sent while travelling read as this one.`);
+  if (O.automated) L.push(`  ${O.automated} messages from SMS shortcodes (2FA codes, delivery alerts) are excluded from everything here.`);
+
+  const yrs = Object.entries(O.byYear);
+  if (yrs.length) L.push(`\nBY YEAR (sent/received): ${yrs.map(([y, v]) => `${y} ${v.sent}/${v.received}`).join(" · ")}`);
+
+  L.push(`\nPEOPLE — one-to-one only, the ${O.people.length} busiest, folded across split threads so an old SMS thread and a newer iMessage one count once. There are ${O.chats} chat rows in the library altogether, groups included:`);
+  for (const p of O.people)
+    L.push(`  ${p.name}: ${p.n} (${pc(p.n, O.total)}) · you sent ${p.sent}, they sent ${p.received} · ${span(p.first, p.last)}` +
+      ` · by year ${Object.entries(p.byYear).map(([y, n]) => `${y}:${n}`).join(" ")}`);
+
+  if (O.groups.length) {
+    // Unlike the people above, these are chat rows: a group that was renamed or
+    // recreated, or that moved from iMessage to RCS, appears twice under the
+    // same name with its history split. Say so — two entries called the same
+    // thing otherwise read as two different groups, and "they stopped talking
+    // in October" is exactly the wrong conclusion to draw from it.
+    L.push(`\nGROUPS — the ${O.groups.length} busiest, one per chat row rather than per conversation. Two entries with the same name and adjoining date ranges are one group that was renamed, recreated or switched service; their counts belong together:`);
+    for (const g of O.groups)
+      L.push(`  ${g.name}: ${g.n} · ${g.people.length} people (${g.people.join(", ")}) · ${span(g.first, g.last)}`);
+  }
+
+  if (O.fading.length) {
+    L.push(`\nDRIFTING — two equal 12-month windows, so a partial current year can't make everyone look like they're fading:`);
+    for (const f of O.fading) L.push(`  ${f.name}: ${f.prior} in the 12–24 months before now → ${f.recent} in the last 12 (${(f.change * 100).toFixed(0)}%)`);
+  }
+  if (O.drifted.length)
+    L.push(`\nGONE QUIET (200+ messages of history, nothing for six months or more): ${O.drifted.map((x) => `${x.name} ${x.n} msgs, silent ${Math.round(x.quietDays / 30)} months`).join(" · ")}`);
+  if (O.behind?.length) {
+    L.push(`\nNEVER GOT BACK TO THEM — incoming messages newer than the last one read. The read mark can predate this copy of the database, so "read up to" is sometimes older than anything in it:`);
+    for (const b of O.behind) L.push(`  ${b.name}: ${b.n} unread · read up to ${d(b.since)} · last message ${d(b.last)}`);
+  }
+
+  L.push(`\nWHAT IS NOT HERE: no message text, no words, no emoji, no reply times, no per-hour rhythm — those exist only inside a single conversation's report, which the person can open from the sidebar. The people and group lists are truncated to the busiest few, so "only N people" is never a safe conclusion.`);
+  return L.join("\n");
+}
+
+/**
  * Naming a handle, from the UI instead of a text editor.
  *
  * Two ways to resolve an unknown number, and the difference matters: a `name`
@@ -703,18 +783,34 @@ function addHistory(entry) {
   } catch { /* history must never break an answer */ }
 }
 
-async function aiAsk({ chatId, merge, mergeIds, question, searchFor, tone }) {
+async function aiAsk({ scope, chatId, merge, mergeIds, question, searchFor, tone }) {
   const cfg = loadAiConfig(DATA);
   if (cfg.error) throw new Error(cfg.error);
   if (!cfg.configured) throw new Error("The assistant is not configured. Create ai.local.json.");
-  const A = chatDetail(chatId, { merge, mergeIds, top: 12 });
-  if (!A || A.error) throw new Error(A?.error ?? `no chat ${chatId}`);
-  // Only run a search when the caller asks for one — it re-reads every message.
-  const s = searchFor ? { q: searchFor, ...search(chatId, { q: searchFor, merge, mergeIds, limit: 25 }) } : null;
-  const context = brief(A, { search: s });
+  // Two scopes, one asker. The library one reuses the cached overview rather
+  // than building anything of its own, so asking costs nothing the page you
+  // are looking at has not already paid for.
+  let context, subject, key;
+  if (scope === "library") {
+    const O = overviewData();
+    if (!O) throw new Error("no database yet");
+    context = libraryBrief(O);
+    subject = "Everything";
+    // A string, not a number: it shares the history file with chat asks and
+    // has to be a key no chat ROWID can collide with.
+    key = "library";
+  } else {
+    const A = chatDetail(chatId, { merge, mergeIds, top: 12 });
+    if (!A || A.error) throw new Error(A?.error ?? `no chat ${chatId}`);
+    // Only run a search when the caller asks for one — it re-reads every message.
+    const s = searchFor ? { q: searchFor, ...search(chatId, { q: searchFor, merge, mergeIds, limit: 25 }) } : null;
+    context = brief(A, { search: s });
+    subject = A.chat.name;
+    key = chatId;
+  }
   const preset = TONES[tone] ?? TONES.funny;
   const { text, truncated } = await llmAsk(cfg, {
-    system: `${AI_SYSTEM}\n\n${preset.prompt}`,
+    system: systemFor(scope === "library" ? "library" : "chat", preset),
     user: `${context}\n\n---\nQUESTION: ${question}`,
     // A question like "assign everyone a character" wants a paragraph per
     // person, and a big group ran past 4096 and stopped mid-word. The ceiling
@@ -725,7 +821,7 @@ async function aiAsk({ chatId, merge, mergeIds, question, searchFor, tone }) {
   const out = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     at: new Date().toISOString(),
-    chatId, chat: A.chat.name, question,
+    chatId: key, chat: subject, question,
     answer: text, truncated, tone, toneLabel: preset.label,
     provider: cfg.label, model: cfg.model, local: cfg.local,
     contextChars: context.length,
@@ -972,6 +1068,7 @@ const server = createServer((req, res) => {
 
     if (p === "/api/ai/ask" && req.method === "POST") {
       return withBody((q) => aiAsk({
+        scope: q.scope === "library" ? "library" : "chat",
         chatId: Number(q.chatId), merge: Boolean(q.merge), mergeIds: q.ids ?? [],
         question: String(q.question ?? "").slice(0, 4000), searchFor: q.search || null,
         tone: q.tone || null,

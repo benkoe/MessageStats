@@ -1150,7 +1150,7 @@ function render(A){
 
   /* search + assistant */
   m.append(searchPanel(A));
-  m.append(askPanel(A));
+  m.append(askPanel(chatAsk(A)));
 }
 
 /* ---------- assistant ---------- */
@@ -1162,6 +1162,15 @@ const SUGGESTED = [
   "What's the weirdest thing in here?",
   "How have we changed since we started talking?",
   "Turn us into Game of Thrones characters",
+];
+/* The library's own three. Not the chat ones reworded: at this scale the
+   questions worth asking are comparisons — one person against another, or
+   against their own past — which is exactly what the overview can support and
+   a single conversation cannot. */
+const SUGGESTED_LIBRARY = [
+  "Who am I drifting away from?",
+  "Who should I text back first?",
+  "Write the year-in-review nobody asked for",
 ];
 
 /**
@@ -1255,8 +1264,11 @@ function setupForm(cfg){
 const ASKS = new Map();
 
 /** Mark the sidebar row so a pending ask is visible from anywhere. */
-function markAsking(chatId,busy){
-  const row=document.querySelector(`.chat[data-id="${chatId}"]`);
+function markAsking(key,busy){
+  // The library ask belongs to the Everything button, which is a .chat with no
+  // data-id — same dot, same place, so a running ask looks the same wherever
+  // it was started from.
+  const row = key==="library" ? $("#ovbtn") : document.querySelector(`.chat[data-id="${key}"]`);
   if(row) row.classList.toggle("asking",busy);
 }
 
@@ -1322,7 +1334,15 @@ async function copyAnswer(r,question,secs,status){
   }
 }
 
-function askPanel(A){
+/**
+ * One conversation, or the whole library.
+ *
+ * `target` is everything that differs: the key an in-flight ask is filed
+ * under, what the box invites you to ask, and what goes on the wire. The rest
+ * — in-flight bookkeeping, tones, history, copy and export — is identical, and
+ * a second copy of it would drift within a week.
+ */
+function askPanel(target){
   // "Assistant" everywhere — Settings already called it that, and one feature
   // with two names reads as two features.
   const card = el("div",{class:"card"}, el("h2",{},"Assistant"));
@@ -1330,8 +1350,10 @@ function askPanel(A){
   api("/api/ai").then(cfg=>{
     if(cfg.error){ card.append(el("div",{class:"flag warn"},el("div",{},el("b",{},"Assistant config problem: "),cfg.error))); return; }
     if(!cfg.configured){ card.append(setupForm(cfg)); return; }
-    const q = el("input",{type:"text",placeholder:"Ask anything about this conversation…"});
-    const scope = el("input",{type:"text",placeholder:"optional: also search for a word first"});
+    const q = el("input",{type:"text",placeholder:target.placeholder});
+    // Search is a per-conversation thing — there is no library-wide one to run
+    // — so the box only exists where it can do something.
+    const scope = target.search ? el("input",{type:"text",placeholder:"optional: also search for a word first"}) : null;
     const tone = el("select",{style:"max-width:170px"});
     for(const t of (cfg.tones??[])) tone.append(el("option",{value:t.id},t.label));
     tone.value = PREFS.get("aiTone") || "funny";
@@ -1385,10 +1407,10 @@ function askPanel(A){
     };
 
     const run = async ()=>{
-      // One ask per conversation at a time. The button is disabled while one is
+      // One ask per subject at a time. The button is disabled while one is
       // running, but Enter and the suggestion chips reach here too — and a
       // second request is charged for, not just wasted.
-      const live=ASKS.get(A.chat.id);
+      const live=ASKS.get(target.key);
       if(live && !live.done) return;
       const asked=q.value.trim();
       if(!asked) return;
@@ -1397,29 +1419,29 @@ function askPanel(A){
       // The promise is created once and settles into the entry, so it does not
       // matter how many panels come and go while it is in the air.
       entry.promise=fetch("/api/ai/ask",{method:"POST",headers:{"content-type":"application/json"},
-        body:JSON.stringify({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question:asked,
-          search:scope.value||null,tone:tone.value})})
+        body:JSON.stringify({...target.body(asked,scope?.value||null),tone:tone.value})})
         .then(x=>x.json())
         .then(r=>{ if(r.error) throw new Error(r.error);
                    entry.result=r; entry.secs=((Date.now()-t0)/1000).toFixed(1); })
         .catch(e=>{ entry.error=e; })
-        .finally(()=>{ entry.done=true; markAsking(A.chat.id,false); });
-      ASKS.set(A.chat.id,entry);
-      markAsking(A.chat.id,true);
+        .finally(()=>{ entry.done=true; markAsking(target.key,false); });
+      ASKS.set(target.key,entry);
+      markAsking(target.key,true);
       showEntry(entry);
     };
     q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
     card.append(
       el("p",{class:"sub"},
+        target.note ? target.note+" " : "",
         cfg.local ? `Running on ${cfg.label} — nothing leaves this machine.`
                   : `Using ${cfg.label} (${cfg.model}). Statistics are sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`),
       el("div",{class:"row",style:"margin-bottom:8px"},q,scope,tone,askBtn),
-      el("div",{style:"margin-bottom:10px"},SUGGESTED.map(s=>
+      el("div",{style:"margin-bottom:10px"},target.suggestions.map(s=>
         el("span",{class:"chip",style:"cursor:pointer",onclick:()=>{q.value=s;run();}},s))),
       out);
 
-    /* Earlier asks for this conversation. Loaded when opened rather than on
-       every chat render — it is a file read nobody needs by default. */
+    /* Earlier asks about this same subject. Loaded when opened rather than on
+       every render — it is a file read nobody needs by default. */
     const hist=el("details",{style:"margin-top:12px"},el("summary",{},"Earlier asks"));
     hist.addEventListener("toggle",async ()=>{
       if(!hist.open || hist.dataset.loaded) return;
@@ -1427,9 +1449,9 @@ function askPanel(A){
       const body=el("div",{class:"sub",style:"margin-top:8px"},"Loading…");
       hist.append(body);
       try{
-        const h=await api(`/api/ai/history?chatId=${A.chat.id}`);
+        const h=await api(`/api/ai/history?chatId=${encodeURIComponent(target.key)}`);
         body.innerHTML="";
-        if(!h.entries.length){ body.append(el("span",{},"Nothing yet for this conversation.")); return; }
+        if(!h.entries.length){ body.append(el("span",{},"Nothing yet.")); return; }
         for(const e of h.entries){
           body.append(el("div",{style:"padding:5px 0;border-bottom:1px solid var(--grid)"},
             el("a",{href:"#",style:"cursor:pointer",onclick:(ev)=>{
@@ -1443,11 +1465,34 @@ function askPanel(A){
     card.append(hist);
 
     // Adopt an ask that was already running (or finished) while you were away.
-    const pending=ASKS.get(A.chat.id);
+    const pending=ASKS.get(target.key);
     if(pending){ q.value=pending.question; showEntry(pending); }
   }).catch(()=>card.append(el("p",{class:"muted"},"Couldn't read assistant config.")));
   return card;
 }
+
+/* The two things it can be asked about. The merge options travel with the chat
+   ask because the report they were read from depends on them — an answer about
+   a merged conversation and one about half of it are different answers. */
+const chatAsk = (A)=>({
+  key: A.chat.id,
+  placeholder: "Ask anything about this conversation…",
+  suggestions: SUGGESTED,
+  search: true,
+  body: (question,searchFor)=>({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question,search:searchFor}),
+});
+
+const libraryAsk = ()=>({
+  key: "library",
+  placeholder: "Ask anything about all your conversations…",
+  suggestions: SUGGESTED_LIBRARY,
+  search: false,
+  // Worth saying rather than leaving to be assumed: this context is smaller
+  // than a single conversation's, because the overview reads no message text
+  // at all. Nobody would guess that the library-wide ask sends *less*.
+  note: "It sees the totals on this page — who you talk to, how much, and when — and no message text at all, because none was read to build them.",
+  body: (question)=>({scope:"library",question}),
+});
 
 const manualCard=()=>el("div",{class:"card"},
   el("h2",{},"Option B — copy it yourself"),
@@ -2007,6 +2052,12 @@ async function renderOverview(mount,gen){
       peopleTable(rows,["conversation","unread","read up to","last message"]),
       "Messages that arrived after the last one you read. The read mark can predate this copy of the database — a pointer that survived a device migration — so \"read up to\" is sometimes older than anything here."));
   }
+
+  // Last, and inside the box rather than appended to the page beside it: the
+  // assistant answers *from* these numbers, so if the scan failed there is
+  // nothing to ask about — and mounting it early would leave someone typing a
+  // question into a box that two seconds of cards then shove down the screen.
+  box.append(askPanel(libraryAsk()));
 }
 
 /* ---------- boot ---------- */
