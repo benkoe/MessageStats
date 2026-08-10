@@ -383,6 +383,12 @@ you'd be dropping and folds them together on `--merge`. Merging dedupes by
 `message.guid`, because `chat_message_join` can in principle link one message
 to several chats.
 
+The web UI does not ask: the sidebar, the ✨ Everything page and the report all
+fold this tier and say so, one entry per conversation with the sibling rows
+counted together. Turn it off in Settings to see the raw chat rows — the
+setting moves all three at once, because a landing page and a sidebar
+disagreeing about how many conversations you have is worse than either count.
+
 **The looser tier, which is report-only on purpose.** Threads can also share a
 *name* while their rosters differ — a work group that adds and removes people
 as they join and leave. `findSameNameChats()` surfaces those as

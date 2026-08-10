@@ -1491,7 +1491,7 @@ const libraryAsk = ()=>({
   // than a single conversation's, because the overview reads no message text
   // at all. Nobody would guess that the library-wide ask sends *less*.
   note: "It sees the totals on this page — who you talk to, how much, and when — and no message text at all, because none was read to build them.",
-  body: (question)=>({scope:"library",question}),
+  body: (question)=>({scope:"library",combine:PREFS.get("combineThreads"),question}),
 });
 
 const manualCard=()=>el("div",{class:"card"},
@@ -1969,7 +1969,10 @@ async function renderOverview(mount,gen){
   mount.append(box);
   box.append(el("p",{class:"muted"},"Adding up every conversation…"));
   let O;
-  try{ O=await api("/api/overview"); }
+  // Same preference as the sidebar, and the assistant below gets it too — the
+  // three of them counting conversations differently is worse than any one of
+  // the counts being the wrong one.
+  try{ O=await api(`/api/overview?combine=${PREFS.get("combineThreads")?1:0}`); }
   catch(e){
     if(gen===PAGE) box.replaceChildren(el("p",{class:"muted"},"Couldn't build the overview: "+esc(e.message)));
     return;
@@ -2024,8 +2027,14 @@ async function renderOverview(mount,gen){
       tr.addEventListener("click",()=>openChat(g.id));
       return tr;
     });
+    // The count of folded rows is worth printing rather than just doing:
+    // silently adding two lines together is the same trick that made this page
+    // disagree with the sidebar in the first place, only in the other direction.
+    const folded=O.groups.filter(g=>g.combined).length;
     box.append(card("Groups",peopleTable(rows,["group","messages","people","first","latest"]),
-      "Click a row to open it."));
+      O.combined
+        ? `Folded like the sidebar${folded?` — ${folded} of these occupy more than one chat row and are counted together`:""}. People is everyone who was ever in it. Click a row to open it.`
+        : "One row per chat row, not per conversation — a recreated or renamed group appears twice. Turn thread combining back on in Settings to fold them. Click a row to open it."));
   }
 
   if(O.fading.length){

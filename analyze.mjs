@@ -254,9 +254,12 @@ export function resolveMe(db, ids, { names, canonical }) {
  *
  * One-to-one chats are grouped by who is on the other end rather than by chat
  * row, so a person whose history is split across a recreated thread and an SMS
- * fork counts once, with all of it.
+ * fork counts once, with all of it. Groups fold the same way, by strict
+ * sibling set — `combine`, which is the sidebar's preference, governs both
+ * pages because a landing page and a sidebar that disagree about how many
+ * conversations exist is worse than either number alone.
  */
-export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
+export function overview(db, { names, canonical, now = Date.now(), top = 12, combine = true }) {
   // Grouped in SQL, not in JS. Pulling all 700k rows across and counting them
   // here took three seconds, which is too long for the page you land on;
   // letting SQLite do it returns a few thousand rows instead.
@@ -343,8 +346,13 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
   const chatName = (dn, cid, ci) =>
     dn?.trim() || [...(rosters.get(cid) ?? [])].map(nameOfHandle).sort().join(", ") || ci || `chat ${cid}`;
 
-  // Fold 1:1 chats together by counterpart; keep groups as themselves.
-  const byPerson = new Map(), groups = [];
+  // Strict siblings only — a group recreated, renamed, or moved from iMessage
+  // to RCS. The looser "same name, different roster" tier is a question that
+  // can never be answered automatically, and is left alone here as everywhere.
+  const sib = combine ? findSiblingChats(db, canonical) : new Map();
+
+  // Fold 1:1 chats together by counterpart, and groups by sibling set.
+  const byPerson = new Map(), byGroup = new Map();
   let automated = 0;
   for (const [cid, c] of perChat) {
     const m = meta.get(cid);
@@ -355,14 +363,33 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
     if (isShortcode(m.ci)) { automated += c.n; continue; }
     const roster = [...(rosters.get(cid) ?? [])];
     if (m.style === 43 || roster.length > 1) {
-      groups.push({
-        id: cid,
+      // Key on the whole sibling set rather than on this row, so every row of
+      // one conversation lands in the same bucket whichever is reached first.
+      // Rows with no messages are already absent from perChat.
+      const family = (sib.get(cid) ?? []).filter((id) => perChat.has(id));
+      const key = Math.min(cid, ...family);
+      let g = byGroup.get(key);
+      if (!g) {
+        g = { id: cid, ids: [], name: null, best: -1,
+              n: 0, sent: 0, received: 0, first: c.first, last: c.last, people: new Set() };
+        byGroup.set(key, g);
+      }
+      g.ids.push(cid);
+      g.n += c.n; g.sent += c.sent; g.received += c.received;
+      g.first = Math.min(g.first, c.first);
+      g.last = Math.max(g.last, c.last);
+      // Union of the rosters: somebody in only the newer thread is still in
+      // the conversation, and the older thread's roster is not the whole story.
+      for (const h of roster) g.people.add(h);
+      // The busiest row names it and is what a click opens — the same rule the
+      // sidebar uses, so the two lists say the same thing about the same chat.
+      if (c.n > g.best) {
+        g.best = c.n;
+        g.id = cid;
         // Unnamed groups have a chat_identifier like "chat1343308266254744",
         // which tells you nothing. Who's in it does.
-        name: chatName(m.dn, cid, m.ci),
-        n: c.n, sent: c.sent, received: c.received, first: c.first, last: c.last,
-        people: roster.map(nameOfHandle).sort(),
-      });
+        g.name = chatName(m.dn, cid, m.ci);
+      }
       continue;
     }
     const key = roster[0] ?? canonical(normalizeHandle(m.ci ?? "")) ?? `chat ${cid}`;
@@ -379,6 +406,15 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
     for (const [y, n] of c.years) inc(p.years, y, n);
     for (const [ym, n] of c.months) inc(p.months, ym, n);
   }
+
+  const groups = [...byGroup.values()]
+    .map((g) => ({
+      id: g.id, ids: [...g.ids].sort((a, b) => a - b), name: g.name,
+      n: g.n, sent: g.sent, received: g.received, first: g.first, last: g.last,
+      people: [...g.people].map(nameOfHandle).sort(),
+      combined: g.ids.length > 1,
+    }))
+    .sort((a, b) => b.n - a.n);
 
   const people = [...byPerson.values()].sort((a, b) => b.n - a.n);
   const shape = (p) => ({
@@ -468,11 +504,16 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
     first: firstMs, last: lastMs, spanDays,
     perDay: total / spanDays,
     activeDays: byDay.size,
-    chats: perChat.size,
+    // Conversations, not chat rows — folded exactly like the lists below, so
+    // the count on the tile and the rows underneath it can be reconciled.
+    // `chatRows` is the raw figure, for anything that means the table.
+    chats: byPerson.size + groups.length,
+    chatRows: perChat.size,
+    combined: combine,
     byYear: Object.fromEntries([...byYear.entries()].sort((a, b) => a[0] - b[0])),
     busiestDay: busiest ? { day: busiest[0], n: busiest[1] } : null,
     people: people.slice(0, top).map(shape),
-    groups: groups.sort((a, b) => b.n - a.n).slice(0, top),
+    groups: groups.slice(0, top),
     // Reported rather than silently dropped — the same rule as link cards and
     // tapbacks. A number that was excluded should be sayable.
     automated,

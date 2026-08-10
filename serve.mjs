@@ -342,13 +342,17 @@ function chatDetail(chatId, { merge = false, mergeIds = [], top = 10 }) {
  * slow on every visit to the page you land on. invalidate() clears it along
  * with everything else when names or the snapshot change.
  */
-function overviewData() {
+function overviewData({ combine = true } = {}) {
   const d = getDb();
   if (!d) return null;
-  if (cache.has("overview")) return cache.get("overview");
+  // Keyed by the preference: folded and unfolded are different pages, and
+  // caching one under the other's name is how the sidebar and the landing page
+  // end up quoting different totals for the same library.
+  const key = `overview|${combine}`;
+  if (cache.has(key)) return cache.get(key);
   const { names, canonical } = identities();
-  const O = overview(d, { names, canonical });
-  cache.set("overview", O);
+  const O = overview(d, { names, canonical, combine });
+  cache.set(key, O);
   return O;
 }
 
@@ -645,18 +649,21 @@ function libraryBrief(O) {
   const yrs = Object.entries(O.byYear);
   if (yrs.length) L.push(`\nBY YEAR (sent/received): ${yrs.map(([y, v]) => `${y} ${v.sent}/${v.received}`).join(" · ")}`);
 
-  L.push(`\nPEOPLE — one-to-one only, the ${O.people.length} busiest, folded across split threads so an old SMS thread and a newer iMessage one count once. There are ${O.chats} chat rows in the library altogether, groups included:`);
+  L.push(`\nPEOPLE — one-to-one only, the ${O.people.length} busiest, folded across split threads so an old SMS thread and a newer iMessage one count once. There are ${O.chats} conversations in the library altogether, groups included:`);
   for (const p of O.people)
     L.push(`  ${p.name}: ${p.n} (${pc(p.n, O.total)}) · you sent ${p.sent}, they sent ${p.received} · ${span(p.first, p.last)}` +
       ` · by year ${Object.entries(p.byYear).map(([y, n]) => `${y}:${n}`).join(" ")}`);
 
   if (O.groups.length) {
-    // Unlike the people above, these are chat rows: a group that was renamed or
-    // recreated, or that moved from iMessage to RCS, appears twice under the
-    // same name with its history split. Say so — two entries called the same
-    // thing otherwise read as two different groups, and "they stopped talking
-    // in October" is exactly the wrong conclusion to draw from it.
-    L.push(`\nGROUPS — the ${O.groups.length} busiest, one per chat row rather than per conversation. Two entries with the same name and adjoining date ranges are one group that was renamed, recreated or switched service; their counts belong together:`);
+    // Only worth a caveat in the unfolded case, which is a setting somebody
+    // has deliberately turned off: then these are chat rows, and a group that
+    // was renamed or recreated appears twice under one name with its history
+    // split. On screen the adjoining date ranges give that away; in a list
+    // they do not, and "they stopped talking in October" is exactly the wrong
+    // conclusion to draw.
+    L.push(O.combined
+      ? `\nGROUPS — the ${O.groups.length} busiest, each one conversation with any recreated or renamed threads counted together:`
+      : `\nGROUPS — the ${O.groups.length} busiest, one per chat row rather than per conversation. Two entries with the same name and adjoining date ranges are one group that was renamed, recreated or switched service; their counts belong together:`);
     for (const g of O.groups)
       L.push(`  ${g.name}: ${g.n} · ${g.people.length} people (${g.people.join(", ")}) · ${span(g.first, g.last)}`);
   }
@@ -783,7 +790,7 @@ function addHistory(entry) {
   } catch { /* history must never break an answer */ }
 }
 
-async function aiAsk({ scope, chatId, merge, mergeIds, question, searchFor, tone }) {
+async function aiAsk({ scope, chatId, merge, mergeIds, combine, question, searchFor, tone }) {
   const cfg = loadAiConfig(DATA);
   if (cfg.error) throw new Error(cfg.error);
   if (!cfg.configured) throw new Error("The assistant is not configured. Create ai.local.json.");
@@ -792,7 +799,9 @@ async function aiAsk({ scope, chatId, merge, mergeIds, question, searchFor, tone
   // are looking at has not already paid for.
   let context, subject, key;
   if (scope === "library") {
-    const O = overviewData();
+    // The caller's own preference, so the assistant reads the page the person
+    // is looking at rather than a differently-folded one.
+    const O = overviewData({ combine });
     if (!O) throw new Error("no database yet");
     context = libraryBrief(O);
     subject = "Everything";
@@ -1070,6 +1079,7 @@ const server = createServer((req, res) => {
       return withBody((q) => aiAsk({
         scope: q.scope === "library" ? "library" : "chat",
         chatId: Number(q.chatId), merge: Boolean(q.merge), mergeIds: q.ids ?? [],
+        combine: q.combine !== false,
         question: String(q.question ?? "").slice(0, 4000), searchFor: q.search || null,
         tone: q.tone || null,
       }));
@@ -1082,7 +1092,7 @@ const server = createServer((req, res) => {
         .catch((e) => send(res, 500, { ok: false, error: e.message }));
     }
     if (p === "/api/overview") {
-      const O = overviewData();
+      const O = overviewData({ combine: qs.get("combine") !== "0" });
       return O ? send(res, 200, O) : send(res, 404, { error: "no database yet" });
     }
     if (p === "/api/chats") return send(res, 200, chats({
