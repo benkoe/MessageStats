@@ -265,16 +265,17 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
   // become JavaScript numbers and never overflow MAX_SAFE_INTEGER.
   const APPLE_EPOCH = 978_307_200;               // 2001-01-01 in unix seconds
   const SECONDS = `(m.date / 1000000000 + ${APPLE_EPOCH})`;
-  // UTC, with no 'localtime' argument, because day() in lib.mjs is
-  // toISOString().slice(0,10) and every other date bucket in this file follows
-  // it. Using local time here shifted the busiest day's count by 200 messages.
-  const utcFmt = (f) => `strftime('${f}', ${SECONDS}, 'unixepoch')`;
+  // 'localtime', to match day() in lib.mjs — these buckets and the JS ones are
+  // read side by side, so they have to be the same frame. The modifier order is
+  // load-bearing: 'unixepoch' first to say what the number is, then 'localtime'
+  // to shift it. SQLite reads the same OS timezone Date does.
+  const localFmt = (f) => `strftime('${f}', ${SECONDS}, 'unixepoch', 'localtime')`;
 
   // One scan, grouped by day and direction; the year comes from the day string.
   // count(distinct) because chat_message_join can file one message against two
   // chats — only 26 times in a 700k-message library, but a total is a total.
   const dayRows = db.prepare(
-    `select ${utcFmt("%Y-%m-%d")} d, m.is_from_me fromMe, count(distinct m.ROWID) n
+    `select ${localFmt("%Y-%m-%d")} d, m.is_from_me fromMe, count(distinct m.ROWID) n
        from message m
        join chat_message_join j on j.message_id = m.ROWID
       where ${REAL_MESSAGE_WHERE}
@@ -285,7 +286,7 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
   // year" makes everyone look like they're fading, because the current year is
   // always partial. Months let the windows below be a fair 12 against 12.
   const chatRows = db.prepare(
-    `select j.chat_id cid, ${utcFmt("%Y-%m")} ym, m.is_from_me fromMe, count(*) n,
+    `select j.chat_id cid, ${localFmt("%Y-%m")} ym, m.is_from_me fromMe, count(*) n,
             min(${DATE_TO_MICROS.replace("date", "m.date")}) first_us,
             max(${DATE_TO_MICROS.replace("date", "m.date")}) last_us
        from message m
@@ -386,7 +387,7 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
 
   // Then versus now, over two equal 12-month windows, so "we don't talk any
   // more" becomes measurable rather than a feeling.
-  const monthKey = (ms) => new Date(ms).toISOString().slice(0, 7);
+  const monthKey = (ms) => day(ms).slice(0, 7);
   const cutRecent = monthKey(now - YEAR), cutPrior = monthKey(now - 2 * YEAR);
   const recentOf = (p) => {
     let recent = 0, prior = 0;
@@ -506,8 +507,9 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   for (const m of msgs) {
     const d = new Date(m.ms);
     inc(byDay, day(m.ms));
-    const monday = new Date(d);
-    monday.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    // Built at local midnight rather than by subtracting from `d`, so a week
+    // spanning a DST change doesn't land on the previous day at 23:00.
+    const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
     inc(byWeek, day(monday.getTime()));
     inc(byMonth, day(m.ms).slice(0, 7));
     inc(byHourStamp, `${day(m.ms)} ${String(d.getHours()).padStart(2, "0")}:00`);
@@ -689,7 +691,7 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     if (kind !== "renamed" && !target && kind !== "left") continue;
     // The same event is often recorded twice; collapse by what it says, to the
     // day, so a duplicate doesn't read as two separate departures.
-    const key = `${new Date(ms).toISOString().slice(0, 10)}|${kind}|${target ?? e.title ?? ""}`;
+    const key = `${day(ms)}|${kind}|${target ?? e.title ?? ""}`;
     if (seenEvent.has(key)) continue;
     seenEvent.add(key);
     history.push({ ms, kind, actor, target, title: e.title ?? null });

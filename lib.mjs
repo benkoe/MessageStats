@@ -459,7 +459,33 @@ export function topN(map, n) {
   return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
 }
 
-export const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+/**
+ * The calendar day a moment fell on, **local** to this machine — `YYYY-MM-DD`.
+ *
+ * `message.date` is an absolute instant and the schema stores no timezone
+ * anywhere, so the clock the sender was actually looking at is unrecoverable.
+ * The closest honest answer is "the day it was, where you are", and that has to
+ * be the same frame the hour-of-day numbers already use.
+ *
+ * This was `toISOString().slice(0, 10)` — UTC — while `getHours()` was local,
+ * which put a quarter of an America/New_York library in the wrong bucket:
+ * everything sent after 8pm counted toward the following day, so the busiest
+ * *day* and the busiest *hour* could disagree about which day it was. Every
+ * report prints `TZ` now, because a date is meaningless without its frame.
+ */
+export const day = (ms) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+/** A moment as local `YYYY-MM-DD HH:MM` — one real message, not a bucket. */
+export const stamp = (ms) => {
+  const d = new Date(ms);
+  return `${day(ms)} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+/** This machine's timezone. Every date and clock time in this tool is in it. */
+export const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
 
 /** One-line quote, trimmed and collapsed, for printing a message inline. */
 export function quote(text, max = 150) {

@@ -302,15 +302,16 @@ function markdown(text){
 }
 const N = n=>(n??0).toLocaleString();
 const pct = (a,b)=> b? (a/b*100).toFixed(1)+"%" : "—";
-const D = ms => new Date(ms).toISOString().slice(0,10);
-/* Local, unlike D() above: DT stamps a single real message, and a search
-   filtered to "up to the 9th" that then prints a hit as the 10th — because the
-   label was UTC and the filter was not — reads as the filter being ignored.
-   D() stays UTC because the day buckets it labels are bucketed UTC; changing
-   that shifts every historical number. */
+/* Local, like day() in lib.mjs — the frame every bucket in this tool uses.
+   As UTC this labelled a quarter of a New York library with the next day. */
+const D = ms => {const d=new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+/* One real message, to the minute — same frame as D(). Printing these in UTC
+   made a search filtered to "up to the 9th" show hits dated the 10th, which
+   reads as the filter being ignored. */
 const DT = ms => {const d=new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} `
-    +`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;};
+  return `${D(ms)} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;};
 const SIZE = b=> b>=1e9? (b/1e9).toFixed(1)+" GB" : b>=1e6? Math.round(b/1e6)+" MB" : Math.round(b/1e3)+" KB";
 const dur = ms=>{const s=Math.round(ms/1000); if(s<60)return s+"s"; const m=Math.round(s/60);
   if(m<60)return m+"m"; const h=Math.floor(m/60); if(h<48)return `${h}h ${m%60}m`; return `${Math.floor(h/24)}d ${h%24}h`;};
@@ -791,11 +792,15 @@ function render(A){
 
   /* rhythm */
   const hours=A.rhythm.hours;
+  // iMessage stores an instant and no timezone anywhere, so the sender's own
+  // clock is unrecoverable — say whose clock this is instead of implying it.
   m.append(card("When they talk",
     el("div",{},
       barRows(hours.map((v,h)=>({k:String(h).padStart(2,"0")+":00",v})),{}),
       el("h3",{style:"margin:14px 0 6px"},"Day of week"),
-      barRows(A.rhythm.dow.map((v,d)=>({k:DOW[d],v})),{}))));
+      barRows(A.rhythm.dow.map((v,d)=>({k:DOW[d],v})),{})),
+    `Clock times in ${TZ} — iMessage records the instant, never the sender's timezone, `
+    +`so anything sent while travelling reads as this one.`));
 
   /* dynamics */
   const dt=el("table",{},el("thead",{},el("tr",{},el("th",{},"person"),el("th",{},"starts"),el("th",{},"last word"),
@@ -1250,7 +1255,7 @@ function markAsking(chatId,busy){
 
 /** The answer plus the provenance you'd want if you pasted it somewhere. */
 function answerText(r,question,secs){
-  const stamp=new Date().toISOString().slice(0,16).replace("T"," ");
+  const stamp=DT(Date.now());
   return [
     `# ${r.chat}`,``,
     `**Question:** ${question}`,
@@ -1285,7 +1290,7 @@ const mdToText=(s)=>String(s)
 async function exportAnswer(r,question,secs,status){
   status.textContent="Saving…";
   try{
-    const name=`MessageStats — ${(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat"} — ${new Date().toISOString().slice(0,10)}`;
+    const name=`MessageStats — ${(r.chat||"chat").replace(/[^\w -]+/g,"").trim().slice(0,40)||"chat"} — ${D(Date.now())}`;
     const res=await fetch("/api/export",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({name,ext:"txt",content:mdToText(answerText(r,question,secs))})}).then(x=>x.json());
     if(!res.ok) throw new Error(res.error||"could not write the file");
@@ -1478,10 +1483,6 @@ function personTable(P,A){
 
 /* ---------- search ---------- */
 const SEARCH_PAGE=60;
-/** A local `YYYY-MM-DD` — what an `input[type=date]` wants, and what the server
- *  now reads as a local-timezone bound rather than a UTC one. */
-const isoDay=ms=>{const d=new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
 
 /**
  * The filters are applied by the server, so results on screen that no longer
@@ -1493,7 +1494,7 @@ const isoDay=ms=>{const d=new Date(ms);
 function searchPanel(A){
   const q=el("input",{type:"search",placeholder:"Search this conversation…"});
   const who=el("select",{},el("option",{value:""},"anyone"),...A.people.map(p=>el("option",{value:p},p)));
-  const lo=isoDay(A.first), hi=isoDay(A.last);
+  const lo=D(A.first), hi=D(A.last);
   // min/max also constrain the native calendar, so it can't wander off into
   // years this conversation doesn't cover.
   const from=el("input",{type:"date",min:lo,max:hi,"aria-label":"From date"});

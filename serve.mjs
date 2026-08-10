@@ -25,10 +25,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  appleMicrosToMs, arg, chatRosters, chatSummaries, DATE_TO_MICROS,
+  appleMicrosToMs, arg, chatRosters, chatSummaries, DATE_TO_MICROS, day,
   findSameNameChats, findSiblingChats, loadIdentities, messageText,
   normalizeHandle, openDb, REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath,
-  dataDir,
+  stamp, dataDir, TZ,
 } from "./lib.mjs";
 import { analyze, loadMessages, overview, resolveChats, resolveMe } from "./analyze.mjs";
 import { ask as llmAsk, listModels, loadConfig as loadAiConfig, PROVIDERS } from "./llm.mjs";
@@ -397,7 +397,7 @@ function search(chatId, { q, merge, mergeIds, who, from, to, limit = 60, offset 
   // Monthly histogram over all hits, so the chart reflects the search not the page.
   const byMonth = {};
   for (const h of hits) {
-    const k = new Date(h.ms).toISOString().slice(0, 7);
+    const k = day(h.ms).slice(0, 7);
     byMonth[k] = (byMonth[k] ?? 0) + 1;
   }
   const byPerson = {};
@@ -498,9 +498,12 @@ const TONES = {
 function brief(A, { search } = {}) {
   const L = [];
   const pc = (a, b) => (b ? `${((a / b) * 100).toFixed(1)}%` : "—");
-  const d = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const d = day;                       // local, like every other bucket
 
   L.push(`CHAT: ${A.chat.name} — ${A.total} messages, ${A.people.length} people, ${d(A.first)} → ${d(A.last)} (${A.spanDays} days, ${A.perDay.toFixed(1)}/day)`);
+  // Whatever a report card shows, brief() must carry — the assistant answers
+  // from here, and "3am" means nothing without the clock it was read on.
+  L.push(`All dates and clock times are ${TZ}. iMessage stores the instant and no timezone, so messages sent while travelling read as this one.`)
   if (A.aka?.length) L.push(`Also known as: ${A.aka.join(", ")}`);
   if (A.chat.ids.length > 1) L.push(`Merged from threads ${A.chat.ids.join(", ")}${A.rostersDiffer ? " (rosters differ — see per-year columns)" : ""}`);
 

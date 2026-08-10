@@ -383,8 +383,11 @@ show senders who appear on no membership list.
 - People who left the group still have messages but are absent from
   `chat_handle_join` — always derive participants from actual senders, not
   the roster.
-- Hour-of-day uses the **local timezone of the machine running this**, not
-  wherever anyone was at the time.
+- Every date and clock time uses the **local timezone of the machine running
+  this**, not wherever anyone was at the time. `message.date` is an absolute
+  instant and the schema records no timezone at all, so the sender's own clock
+  cannot be recovered: a 2am message from Rome is filed as an 8pm message in
+  New York. Reports print the timezone they used.
 
 ---
 

@@ -17,9 +17,9 @@
  */
 
 import {
-  appleMicrosToMs, arg, chatSummaries, DATE_TO_MICROS, findSameNameChats,
+  appleMicrosToMs, arg, chatSummaries, DATE_TO_MICROS, day, findSameNameChats,
   findSiblingChats, loadIdentities, normalizeHandle, openDb, pad, padL,
-  REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath
+  REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath, stamp, TZ
 } from "./lib.mjs";
 
 const argv = process.argv.slice(2);
@@ -65,7 +65,7 @@ const handlesFor = db.prepare(
 const label = (h) => names.get(canonical(normalizeHandle(h))) ?? h;
 const shortDate = (us) => {
   const ms = appleMicrosToMs(us);
-  return ms ? new Date(ms).toISOString().slice(0, 10) : "—";
+  return ms ? day(ms) : "—";
 };
 
 const rows = chats.filter((c) => {
@@ -91,7 +91,7 @@ const age = ageH == null ? "unknown"
   : `${Math.round(ageH / 24)} days old — consider re-copying chat.db`;
 console.log(
   `\n${rows.length} conversation(s), busiest first. Metadata only — no message text is read.` +
-    `\nSnapshot: newest message ${newestMs ? new Date(newestMs).toISOString().slice(0, 16).replace("T", " ") : "?"} (${age})\n`
+    `\nSnapshot: newest message ${newestMs ? stamp(newestMs) : "?"} (${age})  ·  dates in ${TZ}\n`
 );
 // Same people, several chat rows. Metadata only — see findSiblingChats.
 const siblings = findSiblingChats(db, canonical);

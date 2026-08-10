@@ -18,7 +18,8 @@
 
 import {
   appleMicrosToMs, arg, bar, chatRosters, chatSummaries, day, flag, head, human,
-  loadIdentities, openDb, pad, padL, pct, quote, resolveDbPath, resolveNamesPath
+  loadIdentities, openDb, pad, padL, pct, quote, resolveDbPath, resolveNamesPath,
+  TZ
 } from "./lib.mjs";
 import { analyze, loadMessages, resolveChats, resolveMe } from "./analyze.mjs";
 
@@ -77,6 +78,9 @@ console.log(
   `${day(A.first)} .. ${day(A.last)}  (${A.spanDays.toLocaleString()} days, ` +
     `${A.perDay.toFixed(1)}/day average)`
 );
+// iMessage stores an instant and no timezone, so every date and clock time here
+// is this machine's — not the sender's, who may have been somewhere else.
+console.log(`\x1b[2mDates and times in ${TZ}.\x1b[0m`);
 
 const listOf = (xs) => xs.map((s) => `${s.id} (${s.n.toLocaleString()})`).join(", ");
 
@@ -170,6 +174,7 @@ if (B.silence) {
 /* ---------------- rhythm ---------------- */
 
 head("When they talk");
+console.log(`  clock times in ${TZ} — messages sent while travelling read as this timezone\n`);
 const maxHour = Math.max(...A.rhythm.hours);
 for (let h = 0; h < 24; h += 1) {
   console.log(`  ${String(h).padStart(2, "0")}:00 ${padL(A.rhythm.hours[h].toLocaleString(), 8)} ${bar(A.rhythm.hours[h], maxHour, 42)}`);

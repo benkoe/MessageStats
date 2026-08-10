@@ -194,8 +194,18 @@ Four traps, each of which produces plausible nonsense rather than an error:
   `names.json` has an `aliases` map; always fold through `canonical()`.
 
 Also: outgoing messages have no `handle_id` (use `destination_caller_id` for
-"me"), people who left a group still have messages but aren't in
-`chat_handle_join`, and hour-of-day is in this machine's timezone.
+"me"), and people who left a group still have messages but aren't in
+`chat_handle_join`.
+
+**Every date and clock time is local to this machine.** `message.date` is an
+absolute instant and the schema stores no timezone anywhere, so the sender's own
+clock is unrecoverable — a message sent at 2am in Rome reads as 8pm here. Bucket
+with `day()` from `lib.mjs` and never with `toISOString()`; in SQL use
+`strftime(f, secs, 'unixepoch', 'localtime')`, modifiers in that order. `day()`
+*was* UTC while hour-of-day was local, which put a quarter of a New York library
+in the wrong day bucket and let the busiest day and the busiest hour disagree
+about which day it was. If a query you write reports a time, say which timezone
+— `TZ` from `lib.mjs`.
 
 `serve.mjs` is the browser front end; it renders `analyze.mjs`, the same
 module `stats.mjs` prints from, so never teach one a number the other
