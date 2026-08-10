@@ -358,6 +358,29 @@ the Settings page you are standing on.
 Only the strict tier folds. Same name, different roster stays a question — see
 below.
 
+**Three halves, as it turned out.** `overview()` kept folding 1:1 chats by
+counterpart and groups not at all, so the Everything page listed `ThomDigital`
+twice — 6,751 and 5,872 — while the sidebar three inches to its left listed it
+once at 12,623, and the assistant underneath read whichever the page had. It
+folds by sibling set now, with the busiest row supplying the name and the id a
+click opens (the sidebar's rule, so the two lists say the same thing about the
+same chat) and the **union** of the rosters, because somebody who only appears
+in the newer thread is still in the conversation.
+
+Three things fell out of doing it:
+
+- **`chats` is conversations now, `chatRows` is the raw count.** The tile said
+  "680 conversations" while every list under it was folded; a total nobody can
+  reconcile with the rows beneath it is the same disagreement one level up.
+- **`overviewData()` caches per preference** — `overview|true` and
+  `overview|false` are different pages, and caching one under the other's name
+  is exactly how this class of bug happens.
+- **The assistant is handed the caller's preference**, so `libraryBrief()`
+  describes the page the person is actually looking at. Its GROUPS header
+  changes with it: folded says the threads are counted together, unfolded keeps
+  the warning that two same-named entries with adjoining date ranges are one
+  group. On screen the adjoining ranges give that away; in a list they do not.
+
 ### Three merge bugs that all looked like "the button did nothing"
 
 All three shipped together, all three were reported as one complaint, and they
@@ -754,11 +777,8 @@ out of the attachment/edit/read-receipt work:
   from a context that lacked them. When adding a section, teach `brief()` in
   the same commit. **There are two now** — `libraryBrief()` stands in the same
   relation to the Everything page, so a new card there is the same obligation.
-  It carries one thing the page does not: `overview()`'s groups are chat rows,
-  not conversations, so a renamed or recreated group appears twice under one
-  name with its history split. On the page you can see the two date ranges
-  adjoin; a model reading a list cannot, and "they stopped talking in October"
-  is exactly the wrong conclusion. The header line says so.
+  Both take the folding preference and say which way it went — see "Three
+  halves" above.
 - **`other_handle` is a handle ROWID, not a handle string.** It names the
   person a group event acted on, and joining it against `handle.id` as text
   returns nothing at all — which reads as "the column is empty" and is the
