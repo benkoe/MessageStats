@@ -709,6 +709,38 @@ out of the attachment/edit/read-receipt work:
   messages sent while travelling read as this machine's timezone. Both
   frontends and `brief()` say so rather than implying otherwise; if a number is
   a time, it must arrive with its frame attached.
+- **Not every handle is a person, and two kinds never are.**
+
+  `urn:biz:<uuid>` is **Apple Messages for Business** — a business on iMessage
+  has no phone number. Contacts can never resolve it, so it sat in "put names to
+  numbers" looking like corruption and asking to be typed in by hand, while the
+  chat row next to it already said `display_name = "Partiful"`.
+  `businessNames(db)` reads it from there and `loadIdentities(file, db)` folds
+  it in, filling gaps only so a hand-written entry still wins. Derived rather
+  than written to names.json, so it stays right if the business renames itself.
+  Also: `normalizeHandle()` used to strip that UUID to digits, producing a
+  24-digit soup that was unreadable and not reliably unique — `urn:` now passes
+  through lowercased, like an email.
+
+  **SMS shortcodes** are 2FA codes, delivery alerts and marketing. `isShortcode()`
+  drops them from the naming lists, the sidebar, `list-chats` and the overview
+  ranking. The threshold is drawn by the data, not guessed: across 1,854 chats
+  every shortcode was 4–6 digits with **no `+`**, and every real number carrying
+  a `+` was at least 9 — so "no `+`, digits only, at most 8" cannot catch an
+  E.164 number, and a bare 10-digit US number is well clear. A trailing
+  `(smsft)` is stripped first.
+
+  Two things that made this safe to do, both worth re-checking on another
+  corpus before widening the rule: shortcodes were **112 handles, 111 messages
+  out of 891,648** (0.012%), and they appeared in **zero group chats** — so no
+  group statistic can move. Filter on `chat_identifier`, never the display name:
+  one real two-person group in this library is literally called "2024".
+
+  The counts are reported, not silently dropped — `overview()` returns
+  `automated`, `list-chats` prints "12 automated sender(s) hidden", and
+  `build-names` says how many it ignored. Same rule as link cards and tapbacks:
+  a number that was excluded should be sayable.
+
 - **Apostrophes are stripped by the tokenizer**, so `wasn't` arrives as `wasn`.
   The contraction stumps are in the stop list; add to it rather than reworking
   the tokenizer.
