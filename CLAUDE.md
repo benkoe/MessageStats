@@ -192,6 +192,12 @@ Four traps, each of which produces plausible nonsense rather than an error:
 - **One person can have two handles.** Someone messaging from an iCloud
   email while travelling splits into two people with half the history each.
   `names.json` has an `aliases` map; always fold through `canonical()`.
+- **Not every handle is a person.** `urn:biz:<uuid>` is Apple Messages for
+  Business — named from its own chat row's `display_name`, via
+  `loadIdentities(file, db)`. SMS shortcodes (no `+`, digits only, ≤ 8) are
+  2FA codes and delivery alerts; `isShortcode()` keeps them out of the naming
+  lists, the chat lists and the overview ranking. Use both helpers rather than
+  re-deriving them, and report what you excluded.
 
 Also: outgoing messages have no `handle_id` (use `destination_caller_id` for
 "me"), and people who left a group still have messages but aren't in

@@ -1711,7 +1711,11 @@ async function renderSettings(){
   /* --- unnamed numbers --- */
   if(st?.names?.unnamed?.length){
     const nc = card("Put names to numbers",null,
-      `${N(st.names.unnamedTotal)} handles in your chats have no name, busiest first. A report full of phone numbers is much worse than one with names, and Contacts can't help with numbers it doesn't have.`);
+      `${N(st.names.unnamedTotal)} handles in your chats have no name, busiest first. A report full of phone numbers is much worse than one with names, and Contacts can't help with numbers it doesn't have.`
+      // Businesses name themselves from their chat row and shortcodes are gone
+      // entirely, so this list is people — say so, or the shorter list reads
+      // as something having been lost.
+      +` Automated senders are left out, and Apple Messages for Business handles name themselves.`);
     nc.append(el("div",{class:"flag info"},el("div",{},
       el("b",{},"If it's someone you already know under another number, pick them from the list instead. "),
       "Naming it separately counts one person twice, with half their history each — every stat about them is then wrong.")));

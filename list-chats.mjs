@@ -18,16 +18,14 @@
 
 import {
   appleMicrosToMs, arg, chatSummaries, DATE_TO_MICROS, day, findSameNameChats,
-  findSiblingChats, loadIdentities, normalizeHandle, openDb, pad, padL,
-  REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath, stamp, TZ
+  findSiblingChats, isShortcode, loadIdentities, normalizeHandle, openDb, pad,
+  padL, REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath, stamp, TZ
 } from "./lib.mjs";
 
 const argv = process.argv.slice(2);
 const minCount = Number(arg(argv, "min") ?? 1);
 const limit = Number(arg(argv, "limit") ?? 60);
 const search = (arg(argv, "search") ?? "").toLowerCase();
-const { names, canonical } = loadIdentities(resolveNamesPath(argv));
-
 let db;
 try {
   db = openDb(resolveDbPath(argv));
@@ -37,6 +35,9 @@ try {
   console.error(`\n${err.message}\n`);
   process.exit(1);
 }
+
+// After the db is open, so business handles can be named from their chat rows.
+const { names, canonical } = loadIdentities(resolveNamesPath(argv), db);
 
 const chats = db
   .prepare(
@@ -68,13 +69,18 @@ const shortDate = (us) => {
   return ms ? day(ms) : "—";
 };
 
-const rows = chats.filter((c) => {
+const matched = chats.filter((c) => {
   if (!search) return true;
   const people = [...new Set(handlesFor.all(c.rowid).map((h) => label(h.id)))].join(" ");
   return `${c.display_name ?? ""} ${c.chat_identifier ?? ""} ${people}`
     .toLowerCase()
     .includes(search);
 });
+// Shortcodes are 2FA codes and delivery alerts, never conversations. Counted
+// after the search, so the "hidden" line only ever mentions rows you would
+// otherwise have seen.
+const automated = matched.filter((c) => isShortcode(c.chat_identifier));
+const rows = matched.filter((c) => !isShortcode(c.chat_identifier));
 
 if (!rows.length) {
   console.log("\nNo conversations matched. Try a lower --min or a different --search.\n");
@@ -91,7 +97,10 @@ const age = ageH == null ? "unknown"
   : `${Math.round(ageH / 24)} days old — consider re-copying chat.db`;
 console.log(
   `\n${rows.length} conversation(s), busiest first. Metadata only — no message text is read.` +
-    `\nSnapshot: newest message ${newestMs ? stamp(newestMs) : "?"} (${age})  ·  dates in ${TZ}\n`
+    `\nSnapshot: newest message ${newestMs ? stamp(newestMs) : "?"} (${age})  ·  dates in ${TZ}` +
+    (automated.length
+      ? `\n${automated.length} automated sender(s) hidden — shortcodes, not people.`
+      : "") + "\n"
 );
 // Same people, several chat rows. Metadata only — see findSiblingChats.
 const siblings = findSiblingChats(db, canonical);

@@ -166,9 +166,56 @@ export function normalizeHandle(handle) {
   const h = String(handle ?? "").trim();
   if (!h) return "";
   if (h.includes("@")) return h.toLowerCase();
+  // A business handle is a UUID, not a number. Stripping it to digits turned
+  // urn:biz:29896aa3-06a9-… into a 24-digit soup that is neither readable nor
+  // reliably unique — two different businesses could collide on it.
+  if (h.toLowerCase().startsWith("urn:")) return h.toLowerCase();
   const digits = h.replace(/[^\d]/g, "");
   if (digits.length === 10) return `1${digits}`; // bare US number
   return digits;
+}
+
+/**
+ * An SMS shortcode: the 3-to-8 digit sender behind two-factor codes, delivery
+ * alerts and marketing. Never a person, so it is dropped everywhere rather than
+ * sitting in the naming list asking to be identified.
+ *
+ * The rule leans on a boundary the data draws itself: in a 1,854-chat library
+ * every shortcode was 4 to 6 digits with no `+`, and every real number carrying
+ * a `+` was at least 9. So "no `+`, digits only, at most 8" cannot catch an
+ * E.164 number, and a bare 10-digit US number is well clear of it too. The
+ * trailing `(smsft)` some carriers append is stripped first.
+ */
+export function isShortcode(handle) {
+  return /^\d{1,8}$/.test(String(handle ?? "").trim().replace(/\([^)]*\)$/, ""));
+}
+
+/** Apple Messages for Business — `urn:biz:<uuid>`, e.g. an airline or a shop. */
+export const isBusiness = (handle) =>
+  String(handle ?? "").trim().toLowerCase().startsWith("urn:biz:");
+
+/**
+ * Names for business handles, read from the chat that carries them.
+ *
+ * A business on iMessage has no phone number: its handle is a UUID that
+ * Contacts will never resolve, so it landed in "put names to numbers" looking
+ * like corruption and asking to be typed in by hand. The chat row already knows
+ * the answer — `display_name` is "Partiful" — so take it from there.
+ *
+ * Derived, never written to names.json: it comes from the database, so it stays
+ * correct if the business renames itself, and a hand-written entry still wins.
+ */
+export function businessNames(db) {
+  const out = new Map();
+  if (!db) return out;
+  try {
+    for (const r of db.prepare(
+      `select chat_identifier ci, display_name dn from chat
+        where chat_identifier like 'urn:biz:%' and display_name is not null
+          and trim(display_name) <> ''`
+    ).all()) out.set(normalizeHandle(r.ci), r.dn.trim());
+  } catch { /* older schema, or no chat table — nothing to add */ }
+  return out;
 }
 
 /**
@@ -182,8 +229,12 @@ export function normalizeHandle(handle) {
  *   { "(617) 555-0100": "Alice" }
  *   { "names":   { "(617) 555-0100": "Alice" },
  *     "aliases": { "alice@icloud.com": "(617) 555-0100" } }
+ *
+ * Pass `db` to also resolve Apple Messages for Business handles from the chats
+ * that carry them — see businessNames(). Those fill gaps only; anything written
+ * in names.json wins, so a business you have renamed by hand stays renamed.
  */
-export function loadIdentities(file) {
+export function loadIdentities(file, db = null) {
   const names = new Map();
   const aliases = new Map();
   if (file && existsSync(file)) {
@@ -206,6 +257,7 @@ export function loadIdentities(file) {
       aliases.set(normalizeHandle(from), normalizeHandle(String(to)));
     }
   }
+  for (const [h, n] of businessNames(db)) if (!names.has(h)) names.set(h, n);
   const canonical = (key) => {
     let cur = key;
     for (let i = 0; i < 5; i += 1) {

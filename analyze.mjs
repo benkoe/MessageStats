@@ -13,8 +13,8 @@
 
 import {
   appleMicrosToMs, chatRosters, chatSummaries, DATE_TO_MICROS, day,
-  findSameNameChats, findSiblingChats, messageText, median, normalizeHandle,
-  REAL_MESSAGE_WHERE,
+  findSameNameChats, findSiblingChats, isShortcode, messageText, median,
+  normalizeHandle, REAL_MESSAGE_WHERE,
 } from "./lib.mjs";
 import { readArchive } from "./bplist.mjs";
 
@@ -345,9 +345,14 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
 
   // Fold 1:1 chats together by counterpart; keep groups as themselves.
   const byPerson = new Map(), groups = [];
+  let automated = 0;
   for (const [cid, c] of perChat) {
     const m = meta.get(cid);
     if (!m) continue;
+    // A 1:1 "conversation" with a shortcode is a verification code and a
+    // delivery alert. Ranking it beside the people you actually talk to is
+    // noise; it is counted here only so the total can say what was left out.
+    if (isShortcode(m.ci)) { automated += c.n; continue; }
     const roster = [...(rosters.get(cid) ?? [])];
     if (m.style === 43 || roster.length > 1) {
       groups.push({
@@ -468,6 +473,9 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12 }) {
     busiestDay: busiest ? { day: busiest[0], n: busiest[1] } : null,
     people: people.slice(0, top).map(shape),
     groups: groups.sort((a, b) => b.n - a.n).slice(0, top),
+    // Reported rather than silently dropped — the same rule as link cards and
+    // tapbacks. A number that was excluded should be sayable.
+    automated,
     drifted,
     fading,
   };

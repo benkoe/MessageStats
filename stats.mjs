@@ -51,7 +51,8 @@ try {
   console.error(`\n${err.message}\n`);
   process.exit(1);
 }
-const { names, canonical } = loadIdentities(resolveNamesPath(argv));
+// db too, so business handles are named from their own chat rows.
+const { names, canonical } = loadIdentities(resolveNamesPath(argv), db);
 
 const resolved = resolveChats(db, { chatId, merge: MERGE, mergeIds: MERGE_IDS, canonical });
 if (!resolved) {

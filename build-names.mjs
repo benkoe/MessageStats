@@ -31,7 +31,8 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  arg, flag, normalizeHandle, openDb, pad, padL, resolveDbPath, resolveNamesPath,
+  arg, businessNames, flag, isShortcode, normalizeHandle, openDb, pad, padL,
+  resolveDbPath, resolveNamesPath,
 } from "./lib.mjs";
 
 const argv = process.argv.slice(2);
@@ -115,6 +116,7 @@ function readContacts() {
 
 const chatDb = openDb(resolveDbPath(argv));
 const usage = new Map(); // normalized handle -> message count (metadata only)
+let automated = 0;         // shortcodes seen and skipped
 {
   const sql = allChats
     ? `select h.id id, count(*) n
@@ -129,10 +131,16 @@ const usage = new Map(); // normalized handle -> message count (metadata only)
         group by h.id`;
   const stmt = chatDb.prepare(sql);
   for (const r of allChats ? stmt.all() : stmt.all(onlyChat)) {
+    // Shortcodes are 2FA codes and delivery alerts. They have no Contacts
+    // record and never will, so listing them as "still unnamed" is a to-do
+    // list of things nobody should do.
+    if (isShortcode(r.id)) { automated += 1; continue; }
     const key = normalizeHandle(r.id);
     if (key) usage.set(key, (usage.get(key) ?? 0) + r.n);
   }
 }
+// Businesses name themselves through their chat row; nothing to ask about.
+const business = businessNames(chatDb);
 chatDb.close();
 
 /* ---------------- merge ---------------- */
@@ -232,8 +240,13 @@ if (oldMerges.length) {
 }
 
 const stillUnnamed = [...usage.entries()]
-  .filter(([h]) => !claimed.has(h) && !addedNames[h] && !addedAliases[h])
+  .filter(([h]) => !claimed.has(h) && !addedNames[h] && !addedAliases[h] && !business.has(h))
   .sort((a, b) => b[1] - a[1]);
+if (business.size) {
+  console.log(`\nNamed from their own chat rows (${business.size}) — Apple Messages for Business: ` +
+    `${[...business.values()].sort().join(", ")}`);
+}
+if (automated) console.log(`${automated} shortcode(s) ignored — 2FA codes and alerts, not people.`);
 if (stillUnnamed.length) {
   console.log(`\nStill unnamed — not in Contacts (${stillUnnamed.length}), busiest first:`);
   for (const [h, n] of stillUnnamed.slice(0, 12)) {

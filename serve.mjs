@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   appleMicrosToMs, arg, chatRosters, chatSummaries, DATE_TO_MICROS, day,
-  findSameNameChats, findSiblingChats, loadIdentities, messageText,
+  findSameNameChats, findSiblingChats, isShortcode, loadIdentities, messageText,
   normalizeHandle, openDb, REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath,
   stamp, dataDir, TZ,
 } from "./lib.mjs";
@@ -50,7 +50,8 @@ let ids = null;
 const cache = new Map();
 
 function identities() {
-  return loadIdentities(NAMES_PATH);
+  // The db names Apple Messages for Business handles, which Contacts cannot.
+  return loadIdentities(NAMES_PATH, getDb());
 }
 
 function getDb() {
@@ -101,12 +102,15 @@ function status() {
   if (!cache.has("unnamed")) {
     const { names, canonical } = identities();
     const unnamed = new Map();
+    let automated = 0;
     for (const r of d.prepare(
       `select h.id hid, count(*) n from message m
          join chat_message_join j on j.message_id = m.ROWID
          join handle h on h.ROWID = m.handle_id
         where ${REAL_MESSAGE_WHERE} group by h.id`
     ).all()) {
+      // A shortcode is a vending machine, not somebody you forgot to name.
+      if (isShortcode(r.hid)) { automated += r.n; continue; }
       if (names.get(canonical(normalizeHandle(r.hid)))) continue;
       unnamed.set(r.hid, (unnamed.get(r.hid) ?? 0) + r.n);
     }
@@ -114,10 +118,12 @@ function status() {
       list: [...unnamed.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20)
         .map(([handle, n]) => ({ handle, n })),
       total: unnamed.size,
+      automated,
     });
   }
   out.names.unnamed = cache.get("unnamed").list;
   out.names.unnamedTotal = cache.get("unnamed").total;
+  out.names.automated = cache.get("unnamed").automated;
   out.ready = true;
   return out;
 }
@@ -210,7 +216,7 @@ function chats({ min = 1, limit = 400, combine = true } = {}) {
       where ${REAL_MESSAGE_WHERE}
       group by c.ROWID having count(m.ROWID) >= ?
       order by n desc limit ?`
-  ).all(min, limit);
+  ).all(min, limit).filter((r) => !isShortcode(r.ci));   // 2FA codes, not people
 
   const sib = findSiblingChats(d, canonical);
   const same = findSameNameChats(d, canonical);
