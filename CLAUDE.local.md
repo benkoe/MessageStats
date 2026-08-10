@@ -390,6 +390,56 @@ the biggest thread in every merge. The chat you opened is in neither
 `siblings` nor `named`, so there was no summary to find. Both frontends call
 `chatSummaries()` over all the merged ids now.
 
+### Search: four separate bugs that all read as "it ignored me"
+
+Reported as one complaint about the Search card, and worth keeping apart —
+only one of them was a filter that didn't filter.
+
+- **The filters were applied, but only when you clicked the button.** Typing a
+  date and reading the answer already on screen was the whole illusion: 455
+  hits spanning the entire conversation, sitting under two date boxes that said
+  2023–2025. `who`, `from`, `to` and the context selector now re-run the search
+  on `change`, and the header prints the range that was actually applied
+  (`… · filtered to 2025-01-01 → 2025-12-31`). A stale result set is worse than
+  no result set, because it looks authoritative.
+- **The date bounds were parsed as UTC.** `Date.parse("2025-02-09")` is UTC
+  midnight, so on a UTC-5 machine a range ending "the 9th" actually ended at
+  19:00 local on the 9th and began at 19:00 on the *day before* the start. An
+  evening message on either boundary silently fell out. `dayBound()` in
+  `serve.mjs` builds a local `Date` from the parts and moves `to` to the
+  following local midnight. Related: `DT()` in the UI was `toISOString()`, so
+  hit timestamps printed in UTC — a message the filter had correctly kept could
+  render with tomorrow's date on it, which reads as the filter being broken.
+  `DT()` is local now — and so, in the commit after, is everything else. See
+  "Everything is local now" in the gotchas below.
+- **60 of 455, with nothing saying so.** `hits.slice(-limit).reverse()` returned
+  the newest 60 and there was no offset, so a big search was indistinguishable
+  from one that found 60. The route now takes `limit`/`offset`/`context`
+  (clamped — they come off a query string), returns `offset`/`hasMore`, and the
+  UI has "Show 60 more — 120 of 455 shown". Watch the clamp helper: `Number(null)`
+  is **0, not NaN**, so the first version clamped an absent `limit` to the floor
+  and every search came back exactly one hit long.
+- **Half the rows didn't contain the search term.** Two of them: context lines
+  looked like results, and adjacent hits redrew each other. Two hits a line
+  apart have overlapping ±2 windows, so the same three messages printed twice
+  under different headings. The renderer now lays a page out by **message
+  index** — `h.i` indexes the conversation, context sits at
+  `h.i - before.length + k` and `h.i + 1 + k` — draws each message once, and
+  merges hits whose windows touch into one block. 60 hits became 55 blocks and
+  288 lines with zero duplicates. The hit itself is highlighted with `<mark>`
+  (through `markUp()`, DOM nodes only — it is somebody's message, never
+  markup), the block carries a left rule, and a "no context" option makes every
+  visible line a match. Appended pages are filtered against the previous page's
+  floor so the boundary can't duplicate either.
+
+The calendar popup is the fifth complaint and the one with no clean fix:
+WebKit's native date picker steps **one month per click**, so reaching 2023 from
+this month is forty-odd clicks on a 12-px arrow, and it is not styleable or
+scriptable. What is possible is not needing it — `min`/`max` on the inputs
+constrain it to the conversation's own span, and a row of year chips built from
+`A.years` ("All time · 2024 · 2025 · 2026") sets both dates and re-runs in one
+click. Typing into the field always worked and still does.
+
 ### The reaction breakdown is a matrix, not a stacked bar
 
 The kinds used to print as a sentence — "loved 9,633 · laughed at 6,689 · …" —
@@ -624,10 +674,41 @@ out of the attachment/edit/read-receipt work:
 - **`hasColumns()` before selecting `date_edited` / `date_retracted`** — both
   are Ventura-and-later, and selecting them on an older copy kills the whole
   report.
-- **Days are bucketed UTC, hour-of-day is local.** `day()` is
-  `toISOString().slice(0,10)`. Pre-existing inconsistency; match it rather than
-  fix it, or every historical number shifts. Using SQL `'localtime'` moved the
-  busiest day's count by 213.
+- **Everything is local now — one frame, and it is named on screen.** This was
+  the opposite rule for a long time: `day()` was `toISOString().slice(0,10)`,
+  i.e. UTC, while `getHours()` was local, and the note here said to match the
+  inconsistency rather than fix it. It was wrong, and the cost was bigger than
+  "labels are off by a day".
+
+  A UTC day in America/New_York runs 20:00 to 20:00, so it **splices two local
+  evenings together**. On one real 30k-message chat that reported the busiest
+  day as 2025-05-02 with 407 messages; the busiest local day is 2025-07-02 with
+  350 — a different date, and 16% more messages than any day actually had.
+  25.3% of that library's messages fell on a different UTC day than local day
+  (212 in a different month, 31 in a different year), so the per-year table —
+  which used `getFullYear()`, local — could not be reconciled with the monthly
+  chart, which was UTC. Worst of all was `byHourStamp`: `` `${day(m.ms)}
+  ${d.getHours()}:00` `` glued a UTC date to a local hour and named an hour
+  that never happened.
+
+  `day()`, `stamp()` and `TZ` live in `lib.mjs`; `analyze.mjs` uses
+  `localFmt()` — `strftime(f, secs, 'unixepoch', 'localtime')`, **modifiers in
+  that order**, `'unixepoch'` to say what the number is before `'localtime'`
+  shifts it — so the SQL buckets and the JS buckets are the same frame. Weeks
+  are built as `new Date(y, m, d - ((dow+6)%7))`, at local midnight, so a week
+  spanning a DST change doesn't land on 23:00 the day before.
+
+  Yes, this moved historical numbers. The library-wide busiest day kept its
+  date and lost 213 messages, which is the same 213 this note used to cite as
+  the reason *not* to do it. Losing them is the correction: they belonged to
+  the day before.
+
+  What cannot be fixed: `message.date` is an absolute instant and **no table in
+  the schema stores a timezone** — not `date`, `date_read`, `date_delivered`,
+  `date_played` or `date_edited`. The sender's own clock is unrecoverable, so
+  messages sent while travelling read as this machine's timezone. Both
+  frontends and `brief()` say so rather than implying otherwise; if a number is
+  a time, it must arrive with its frame attached.
 - **Apostrophes are stripped by the tokenizer**, so `wasn't` arrives as `wasn`.
   The contraction stumps are in the stop list; add to it rather than reworking
   the tokenizer.
