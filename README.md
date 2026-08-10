@@ -35,6 +35,30 @@ app says so and links to the download rather than failing silently.
 *before* starting the server, so a launch always runs the current version. Push
 to `main` and everyone gets it next time they open it, with no new download.
 
+### Uninstall
+
+**Settings → Uninstall.** One button, and it removes everything: the copy of
+your messages, the names and merge decisions you entered, the saved assistant
+answers, the API key, and the app itself.
+
+It all goes to the **Trash**, in a folder called *MessageStats (uninstalled)* —
+nothing is erased, so you can drag any of it back out until you empty it. Your
+database is in there under its own name, which matters: getting that back
+otherwise means granting Full Disk Access again and re-importing.
+
+Two things it can't finish for you, both offered as a button at the end:
+
+- **Full Disk Access.** macOS has no API to revoke a permission any more than
+  it has one to request this one, so the last step is turning MessageStats off
+  in System Settings. The button opens that exact pane; select it and click −.
+- **Quitting.** The app can't move its own bundle to the Trash while it is
+  running, so "Quit and remove the app" closes it and the bundle follows a
+  moment later.
+
+Dragging MessageStats to the Trash yourself still works, but it only removes
+the launcher — the database, the history and the key are deliberately stored
+outside the bundle so that updates can replace it, and they stay behind.
+
 ### Building it yourself
 
 If you'd rather not run a binary someone sent you, clone this repo and run

@@ -198,6 +198,10 @@ button.act:hover{background:color-mix(in oklab,var(--s1) 10%,var(--surface));tra
 button.act:active{transform:translateY(0) scale(.97)}
 button.act.primary{background:var(--s1);border-color:var(--s1);color:#fff}
 button.act.primary:hover{background:color-mix(in oklab,var(--s1) 88%,#fff)}
+/* The only destructive button in the app. Outlined rather than filled: it has
+   to be findable without competing with the primary action beside it. */
+button.act.danger{color:var(--crit);border-color:color-mix(in oklab,var(--crit) 50%,var(--ring))}
+button.act.danger:hover{background:color-mix(in oklab,var(--crit) 11%,var(--surface))}
 .row{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
 /* inputs default to width:100%; inside a row they should share the line */
 .row>input,.row>select{width:auto;flex:0 1 auto}
@@ -302,6 +306,9 @@ function markdown(text){
 }
 const N = n=>(n??0).toLocaleString();
 const pct = (a,b)=> b? (a/b*100).toFixed(1)+"%" : "—";
+/* Disk sizes, decimal like Finder's, so the number matches Get Info. */
+const SZ = b => b==null? "—" : b>=1e9? (b/1e9).toFixed(1)+" GB"
+  : b>=1e6? Math.round(b/1e6)+" MB" : b>=1e3? Math.round(b/1e3)+" KB" : b+" B";
 /* Local, like day() in lib.mjs — the frame every bucket in this tool uses.
    As UTC this labelled a quarter of a New York library with the next day. */
 const D = ms => {const d=new Date(ms);
@@ -1789,6 +1796,120 @@ async function renderSettings(){
     el("div",{},"Data folder: ",el("code",{},st?.dirs?.data ?? "~/Library/Application Support/MessageStats")),
     el("div",{style:"margin-top:6px"},"Code folder: ",el("code",{},st?.dirs?.code ?? "~/Library/Application Support/MessageStats/app")),
     el("div",{style:"margin-top:6px"},"The app updates itself from the repo every time it launches."))));
+
+  /* --- uninstall --- */
+  m.append(uninstallCard());
+}
+
+/**
+ * The only destructive button in the app.
+ *
+ * Dragging MessageStats to the Trash is what everybody will try, and it leaves
+ * the whole database, the assistant history and the API key sitting in
+ * Application Support forever — so the removal that actually removes things
+ * has to be somewhere findable, and this is where people already come to look
+ * at what is on disk.
+ *
+ * Three rules it is built to: name *things*, not paths, because the person
+ * reading it is deciding whether to lose them; show what each one weighs;
+ * and never say "delete" when the truth is "moved to the Trash", which is the
+ * whole reason one click is enough.
+ */
+function uninstallCard(){
+  const c = card("Uninstall", null,
+    "Removes MessageStats and everything it has kept on this Mac. Nothing is erased — it all goes to the Trash, and you can drag it back out until you empty it.");
+  const body = el("div",{});
+  const start = el("button",{class:"act danger"},"Uninstall MessageStats…");
+  start.addEventListener("click",()=>confirmStep());
+  body.append(el("div",{class:"row"},start));
+  c.append(body);
+
+  async function confirmStep(){
+    start.disabled = true;
+    body.replaceChildren(el("p",{class:"muted"},"Adding it up…"));
+    let inv;
+    try{ inv = await api("/api/uninstall"); }
+    catch(e){ body.replaceChildren(el("p",{class:"muted"},"Couldn't read what's on disk: "+esc(e.message))); return; }
+
+    const list = el("div",{class:"sub"});
+    for(const i of inv.items){
+      list.append(el("div",{style:"padding:5px 0;border-bottom:1px solid var(--grid)"},
+        el("b",{},i.label), " — ", SZ(i.bytes),
+        i.detail? el("div",{},i.detail) : null));
+    }
+    const total = inv.items.reduce((a,i)=>a+(i.bytes||0),0);
+    const go = el("button",{class:"act danger"},`Move all of this to the Trash — ${SZ(total)}`);
+    const no = el("button",{class:"act"},"Cancel");
+    no.addEventListener("click",()=>{ start.disabled=false; body.replaceChildren(el("div",{class:"row"},start)); });
+    go.addEventListener("click",()=>doIt(go,no));
+    body.replaceChildren(
+      el("div",{class:"flag warn"},el("div",{},
+        el("b",{},"This is the copy of your messages. "),
+        "Getting it back later means granting Full Disk Access again and re-importing — so if you only want the app gone, take it out of the Trash afterwards.")),
+      list, el("div",{class:"row",style:"margin-top:11px"},go,no));
+  }
+
+  async function doIt(go,no){
+    go.disabled = no.disabled = true;
+    go.textContent = "Moving…";
+    let r;
+    try{
+      r = await fetch("/api/uninstall",{method:"POST"}).then(x=>x.json());
+    }catch(e){
+      body.replaceChildren(el("p",{class:"muted"},"Couldn't move it: "+esc(e.message))); return;
+    }
+    // From here the code folder is in the Trash too, so this page can never be
+    // fetched again. Everything below is built from the reply in hand; nothing
+    // navigates, reloads, or asks the server for a file.
+    const done = el("div",{});
+    // Name the folder: "it's in the Trash" is only reversible if you can find
+    // it, and four of these were called com.benkoevary.messagestats.
+    done.append(r.moved.length
+      ? el("p",{},"Moved to the Trash, in a folder called ",el("b",{},r.folder),": ",
+          r.moved.map(x=>x.label).join(", "),".")
+      : el("p",{},"Nothing left to move — it was already gone."));
+    if(r.failed?.length){
+      done.append(el("div",{class:"flag warn"},el("div",{},
+        el("b",{},"Some of it wouldn't move. "),
+        r.failed.map(f=>`${f.label} (${f.error})`).join("; "))));
+    }
+
+    /* Two things a local server genuinely cannot finish by itself. */
+    const fdaNote = el("span",{class:"sub"});
+    const fda = el("button",{class:"act"},"Open Full Disk Access settings");
+    fda.addEventListener("click",async ()=>{
+      // No revoke API exists for this permission — tccutil would need an admin
+      // password, which is worse than one click on the minus button. Landing on
+      // the right pane is the ceiling, same as it is for granting it.
+      try{
+        await fetch("/api/open-privacy",{method:"POST"});
+        fdaNote.textContent = "Select MessageStats in the list and click −.";
+      }catch{ fdaNote.textContent = "Couldn't open it — System Settings › Privacy & Security › Full Disk Access."; }
+    });
+
+    const quitNote = el("span",{class:"sub"});
+    const quit = el("button",{class:"act danger"},"Quit and remove the app");
+    quit.addEventListener("click",async ()=>{
+      quit.disabled = true; quit.textContent = "Quitting…";
+      try{
+        const f = await fetch("/api/uninstall/finish",{method:"POST"}).then(x=>x.json());
+        quitNote.textContent = f.app
+          ? "MessageStats is closing, and the app goes to the Trash a moment later."
+          : "Nothing left to remove — you're running the server from a terminal, not the app.";
+      }catch{
+        // Expected on the app path: the server is killed mid-reply.
+        quitNote.textContent = "MessageStats is closing.";
+      }
+    });
+
+    done.append(
+      el("p",{class:"sub",style:"margin-top:12px"},"Two things left, and neither can be done from here:"),
+      el("div",{class:"row",style:"margin-top:4px"},fda,fdaNote),
+      el("div",{class:"row",style:"margin-top:8px"},quit,quitNote));
+    body.replaceChildren(done);
+  }
+
+  return c;
 }
 
 /* ---------- overview: the whole library at once ---------- */

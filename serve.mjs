@@ -17,9 +17,10 @@
  */
 
 import { createServer } from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { copyFile, stat as statAsync } from "node:fs/promises";
-import { existsSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, unlinkSync,
+         renameSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -733,6 +734,149 @@ async function aiAsk({ chatId, merge, mergeIds, question, searchFor, tone }) {
   return out;
 }
 
+/* ---------------- uninstall ---------------- */
+
+/**
+ * Dragging the app to the Trash removes the stub and nothing else: the bundle
+ * is a launcher, and everything durable lives outside it so `git pull` can
+ * replace the clone wholesale. So an "uninstall" that way leaves well over a
+ * gigabyte behind — a full copy of the message database, the saved assistant
+ * answers, and the API key in plain text — plus a stale Full Disk Access row.
+ * None of that is discoverable, so it is a button rather than a paragraph in
+ * the README.
+ *
+ * Three things about how it works, all deliberate:
+ *
+ * - **Everything is moved to ~/.Trash, never deleted.** That is what makes a
+ *   one-click "remove all of this" defensible: the answer to "wait, no" is to
+ *   open the Trash. The database in particular costs a Full Disk Access grant
+ *   and a re-import to get back.
+ * - **A rename, not Finder.** `tell application "Finder" to delete` is the
+ *   idiomatic way to trash something, and it needs an Apple Events grant — a
+ *   permission dialog in the middle of an uninstall, which is exactly the
+ *   friction this is here to remove. A rename into ~/.Trash needs no
+ *   permission at all and lands in the same place. The cost is that Finder's
+ *   "Put Back" is greyed out, because that metadata is Finder's to write.
+ * - **The paths are fixed here, not taken from the caller.** Same rule as
+ *   /api/export and /api/open-privacy: any page in any browser can POST to a
+ *   loopback server, and an endpoint that trashes what it is handed is a
+ *   remote file deleter.
+ */
+
+// Only used if the bundle can't be found to read its own Info.plist. Must match
+// MESSAGESTATS_BUNDLE_ID in bin/make-app.sh.
+const BUNDLE_ID = "com.benkoevary.messagestats";
+
+/**
+ * Where the .app that launched us actually sits, walked up the process tree
+ * rather than assumed to be /Applications — that is a convention, not a rule,
+ * and an uninstall that quietly misses the bundle is worse than one that says
+ * it couldn't find it.
+ *
+ * Null when the server was started from a terminal, which is the right answer
+ * rather than a failure: there is no bundle to remove.
+ */
+function appBundle() {
+  let pid = process.pid;
+  for (let hop = 0; hop < 8 && pid > 1; hop++) {
+    let line;
+    try {
+      line = execFileSync("/bin/ps", ["-o", "ppid=,comm=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    } catch { return null; }
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!m) return null;
+    const bundle = m[2].match(/^(.*\.app)\/Contents\/MacOS\//);
+    // Ours only. Run from a terminal this walk ends at Terminal.app or iTerm,
+    // and offering to throw *that* in the Trash would be a spectacular bug.
+    if (bundle && path.basename(bundle[1]) === "MessageStats.app") return { path: bundle[1], pid };
+    pid = Number(m[1]);
+  }
+  return null;
+}
+
+function bundleId(appPath) {
+  if (!appPath) return BUNDLE_ID;
+  try {
+    // make-app.sh writes this plist as XML, so there is no need for plutil.
+    const plist = readFileSync(path.join(appPath, "Contents", "Info.plist"), "utf8");
+    const m = plist.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/);
+    if (m) return m[1];
+  } catch { /* fall back to the constant */ }
+  return BUNDLE_ID;
+}
+
+/** Bytes on disk, via du because walking a git clone in JS is slower than it. */
+function sizeOnDisk(p) {
+  try {
+    const out = execFileSync("/usr/bin/du", ["-sk", p], { encoding: "utf8", timeout: 15_000 });
+    return Number(out.trim().split(/\s+/)[0]) * 1024;
+  } catch { return null; }
+}
+
+/**
+ * Everything MessageStats has written outside its own bundle. Named in things
+ * rather than paths, because the confirmation is read by someone deciding
+ * whether to lose them.
+ */
+function uninstallTargets() {
+  const app = appBundle();
+  const id = bundleId(app?.path);
+  const lib = (...bits) => path.join(os.homedir(), "Library", ...bits);
+  // `as` is the name it gets in the Trash. Four of these are called
+  // com.benkoevary.messagestats, so landing them side by side would put four
+  // identical rows in the Trash and make "which one was my database" an
+  // unanswerable question — which would leave the whole it-is-reversible
+  // promise true on paper and useless in practice. The one worth restoring
+  // keeps its real name so it can be dragged straight back.
+  const items = [
+    { key: "data", label: "Your data", path: DATA, as: path.basename(DATA),
+      detail: "the copy of your messages, the names you entered, your merge decisions, the saved assistant answers, and your API key" },
+    { key: "webkit", label: "Browser storage", path: lib("WebKit", id) },
+    { key: "http", label: "Cookies and local storage", path: lib("HTTPStorages", id) },
+    { key: "caches", label: "Caches", path: lib("Caches", id) },
+    { key: "prefs", label: "Preferences", path: lib("Preferences", `${id}.plist`), as: "Preferences.plist" },
+    { key: "state", label: "Saved window state", path: lib("Saved Application State", `${id}.savedState`) },
+    { key: "container", label: "Container", path: lib("Containers", id) },
+  ];
+  return { app, id, items: items.filter((i) => existsSync(i.path)).map((i) => ({ ...i, as: i.as ?? i.label })) };
+}
+
+/** Belt to the braces above: nothing outside our two roots can ever move. */
+function safeToTrash(p) {
+  const home = os.homedir();
+  const abs = path.resolve(p);
+  const depth = abs.split(path.sep).filter(Boolean).length;
+  if (abs === "/" || abs === home || abs === "/Applications" || depth < 2) return false;
+  // Wherever MESSAGESTATS_DATA put it. It is ours by definition, and refusing
+  // it would fail the one item that matters on any machine using a second
+  // profile or an external disk.
+  if (abs === path.resolve(DATA)) return true;
+  return abs.startsWith(`${home}${path.sep}`) || abs.startsWith(`/Applications${path.sep}`);
+}
+
+/**
+ * A free name inside `dir` — an earlier attempt, or a file the user threw away
+ * by hand, may already be sitting there.
+ *
+ * `isDir` is not a nicety: extname("com.benkoevary.messagestats") is
+ * ".messagestats", so the obvious version renamed a colliding folder to
+ * "com.benkoevary 2.messagestats". Bundles are the exception — a second copy
+ * of the app has to stay "MessageStats 2.app" to still be an app.
+ */
+function freeName(dir, base, isDir) {
+  const ext = isDir && !base.endsWith(".app") ? "" : path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let dest = path.join(dir, base);
+  for (let i = 2; existsSync(dest); i++) dest = path.join(dir, `${stem} ${i}${ext}`);
+  return dest;
+}
+
+const TRASH = () => {
+  const t = path.join(os.homedir(), ".Trash");
+  mkdirSync(t, { recursive: true });
+  return t;
+};
+
 /* ---------------- http ---------------- */
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml" };
@@ -953,6 +1097,75 @@ const server = createServer((req, res) => {
       const pane = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
       return execFile("/usr/bin/open", [pane], (err) =>
         send(res, err ? 500 : 200, { ok: !err, error: err ? err.message : null }));
+    }
+    if (p === "/api/uninstall" && req.method === "GET") {
+      // What the confirmation lists, with what each one weighs. du on a 1.5 GB
+      // directory is metadata only, so this is fast enough to do on the click.
+      const t = uninstallTargets();
+      return send(res, 200, {
+        app: t.app ? t.app.path.replace(os.homedir(), "~") : null,
+        items: t.items.map((i) => ({
+          key: i.key, label: i.label, detail: i.detail ?? null,
+          path: i.path.replace(os.homedir(), "~"), bytes: sizeOnDisk(i.path),
+        })),
+      });
+    }
+    if (p === "/api/uninstall" && req.method === "POST") {
+      const t = uninstallTargets();
+      // One self-describing folder rather than five scattered rows, so what is
+      // in the Trash is legible a week later when someone wonders what it is.
+      const folder = freeName(TRASH(), "MessageStats (uninstalled)", true);
+      mkdirSync(folder, { recursive: true });
+      const moved = [], failed = [];
+      for (const item of t.items) {
+        const entry = { label: item.label, path: item.path.replace(os.homedir(), "~") };
+        if (!safeToTrash(item.path)) { failed.push({ ...entry, error: "refused — not a MessageStats path" }); continue; }
+        try { renameSync(item.path, path.join(folder, item.as)); moved.push(entry); }
+        catch (err) {
+          // The one predictable failure: a rename cannot cross volumes, so a
+          // MESSAGESTATS_DATA on an external disk has to be dragged by hand.
+          // Say that rather than printing EXDEV at somebody.
+          failed.push({ ...entry, error: err.code === "EXDEV"
+            ? "it's on a different disk from the Trash — move it by hand" : err.message });
+        }
+      }
+      // The database just moved out from under the handle we are holding.
+      invalidate();
+      if (db) { try { db.close(); } catch { /* already gone */ } db = null; }
+      // The code clone is inside DATA, so ui/index.html can no longer be read
+      // from disk: the page that renders this reply must not navigate or
+      // reload afterwards. It doesn't — the final screen is built from this
+      // JSON, and the two endpoints it can still reach touch no files.
+      return send(res, 200, {
+        ok: !failed.length, moved, failed, folder: path.basename(folder),
+        app: t.app ? t.app.path.replace(os.homedir(), "~") : null,
+      });
+    }
+    if (p === "/api/uninstall/finish" && req.method === "POST") {
+      const app = appBundle();
+      if (!app || !safeToTrash(app.path)) return send(res, 200, { ok: true, app: null });
+      // The bundle is the one thing this process cannot finish. Renaming a
+      // running .app is asking for the stale code-signing cache keyed to its
+      // path (see CLAUDE.local.md), and Finder refuses outright — so the last
+      // step outlives us: a detached shell waits for the app to exit, moves
+      // the bundle, and gives up quietly after a minute rather than lurking
+      // forever waiting to delete something.
+      // At the top of the Trash, not in the folder above: an .app people
+      // recognise and can drag back out is worth more than tidiness.
+      const dest = freeName(TRASH(), path.basename(app.path), true);
+      const script = `
+        pid="$1"; src="$2"; dest="$3"
+        for _ in $(seq 1 200); do /bin/kill -0 "$pid" 2>/dev/null || break; sleep 0.3; done
+        /bin/kill -0 "$pid" 2>/dev/null && exit 0
+        [ -d "$src" ] && exec /bin/mv "$src" "$dest"`;
+      // detached: the app SIGTERMs launch.sh, which kills this process group on
+      // the way out. Its own session is what lets the helper survive that.
+      spawn("/bin/bash", ["-c", script, "messagestats-uninstall", String(app.pid), app.path, dest],
+        { detached: true, stdio: "ignore" }).unref();
+      send(res, 200, { ok: true, app: app.path.replace(os.homedir(), "~") });
+      // Let the reply reach the page before the app — and this process with
+      // it — goes away.
+      return setTimeout(() => { try { process.kill(app.pid, "SIGTERM"); } catch { /* gone already */ } }, 400);
     }
     if (p === "/api/reload" && req.method === "POST") {
       invalidate();
