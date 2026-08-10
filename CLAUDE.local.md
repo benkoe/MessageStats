@@ -511,6 +511,84 @@ Anything that reads well pasted elsewhere should also offer **Copy** —
 clipboard access works from `http://127.0.0.1` because localhost counts as a
 secure context, with the `execCommand` selection trick as a fallback.
 
+### Uninstalling, and why it is a button rather than a paragraph
+
+Dragging the app to the Trash is what everybody tries, and the update model
+guarantees it removes almost nothing: the bundle is a launcher, everything
+durable lives one level above the clone so `git pull` can replace the repo
+wholesale. On a real install that left **1.5 GB** behind — the copy of the
+message database, `ai-history.local.json` quoting real conversations, and the
+API key in plain text in `ai.local.json` — plus `~/Library/{WebKit,HTTPStorages,
+Caches,Preferences}/<bundle-id>` and a stale Full Disk Access row. None of it
+discoverable, so instructions were never going to be the answer.
+
+`GET`/`POST /api/uninstall` and `POST /api/uninstall/finish` in `serve.mjs`,
+with the card at the bottom of Settings. Server-side for the usual reason: the
+menu bar is built in the sealed Swift binary, so an Uninstall menu item would
+cost a signed and notarized DMG, and this ships by `git pull`.
+
+Four decisions worth keeping:
+
+- **Everything is moved to `~/.Trash`, never deleted.** That reversibility is
+  the entire reason one click is defensible — the answer to "wait, no" is to
+  open the Trash. The database in particular costs an FDA grant and a
+  re-import to get back.
+- **A rename, not Finder.** `tell application "Finder" to delete` is the
+  idiomatic way, and it needs an **Apple Events grant** — a permission dialog
+  in the middle of an uninstall, which is precisely the friction being removed.
+  `renameSync` into `~/.Trash` needs no permission at all and lands in the same
+  place; `/Applications` and `~` are both on the data volume, so it is a rename
+  and not a copy. Cost: Finder's "Put Back" is greyed out, because that
+  metadata is Finder's to write.
+- **The bundle path is walked, not hardcoded.** `appBundle()` climbs the
+  process tree with `ps -o ppid=,comm=` looking for `*.app/Contents/MacOS/`.
+  `/Applications` is a convention, not a rule. It **must** check the basename
+  is `MessageStats.app`: run from a terminal the walk ends at `Terminal.app`,
+  and offering to trash *that* would be a spectacular bug. Null is the right
+  answer there, not a failure — there is no bundle to remove.
+- **The paths are fixed in the handler.** Same rule as `/api/export` and
+  `/api/open-privacy`: any page in any browser can POST to a loopback server,
+  and an endpoint that trashes what it is handed is a remote file deleter.
+
+**The bundle needs a detached helper.** Finder refuses to trash a running app,
+and renaming a live bundle invites the stale code-signing cache keyed to its
+path (see above). So `finish` spawns `/bin/bash -c` with `detached: true` and
+`.unref()` — it waits on `kill -0` for the app's pid, moves the bundle, and
+**gives up quietly after 60 s** rather than lurking forever waiting to delete
+something. `detached` is load-bearing: the app SIGTERMs `launch.sh`, which
+kills the process group on the way out, and a new session is what survives it.
+Next time a DMG is cut for another reason, `applicationWillTerminate` can do
+this natively in three lines and the helper can go.
+
+Two things that bit while building it, both caught by running the whole flow
+against a throwaway `HOME` with a fake bundle (a **forking** C stub — an `exec`
+replaces the process image and breaks the ancestor walk):
+
+- **`path.extname("com.benkoevary.messagestats")` is `".messagestats"`.** The
+  collision suffix therefore produced `com.benkoevary 2.messagestats`. Only
+  split an extension off a directory when it is a bundle (`.app`).
+- **Five items landed in the Trash, four of them called
+  `com.benkoevary.messagestats`.** Reversible on paper, useless in practice —
+  a week later nobody can tell which one held their database. They go into one
+  `MessageStats (uninstalled)` folder now, named by *label*, except the data
+  directory which keeps its real name so it can be dragged straight back. The
+  app stays at the top of the Trash as `MessageStats.app`, because an app
+  people recognise beats tidiness.
+
+**Full Disk Access cannot be revoked either.** Symmetric with not being able to
+request it. `tccutil reset SystemPolicyAllFiles <id>` exists but that grant is
+in the *system* TCC database, so it needs root — an admin password prompt
+during an uninstall is worse than one click on the `−` button. The final screen
+reuses `/api/open-privacy` to land on the pane; that is the ceiling.
+
+**After the POST, the page can never be fetched again** — `ui/index.html` lives
+inside the code clone, which is now in the Trash. The final screen is built
+entirely from the JSON reply, and the only two endpoints it can still reach
+(`open-privacy`, `finish`) touch no files. Anything added there must not
+navigate, reload, or ask the server for an asset. Watch `dataDir()` too: it
+`mkdirSync`es, so any call after the move silently recreates an empty data
+directory.
+
 ### An in-flight ask must not live in the DOM
 
 Clicking another conversation calls `openChat()`, which empties `#main`. There
