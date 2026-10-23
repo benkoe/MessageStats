@@ -138,16 +138,28 @@ rather than a promise.
 
 Ask questions about a conversation in plain English — "who wins arguments",
 "what changed since 2023", "which of these numbers are artifacts". It gets the
-**computed statistics**, not your message history: per-person rates, reply
-matrices, signature words, rhythm, plus a handful of quotes the stats point at.
-Roughly 6 KB per question.
+**computed statistics** — per-person rates, reply matrices, signature words,
+rhythm — **plus a selection of real messages chosen by rule**: what the room
+reacted to or laughed at, the longest, the most repeated, what went
+unanswered, a spread across every year, and whatever matches the words of your
+question. Up to about 20 KB of message text per question for a conversation;
+the brief says how it was chosen and that it is a subset, and the answer says
+how much text was sent.
+
+**Ask about a person, not a thread.** Click a name on ✨ Everything, or type it
+into the sidebar filter, to see someone across every conversation they are in
+— their one-to-one thread and each group — with their own numbers in each and
+the assistant reading their messages from all of them. That is where "write
+the toast", "how are they different in the group chat", and "what do they
+bring up unprompted" live. Up to about 40 KB of their messages per question.
 
 **It sits on ✨ Everything too**, where the question is about your whole
 library rather than one thread: who you're drifting away from, who you never
 got back to, how the years compare. That context is built from the overview,
 which reads **no message text at all** — so it is counts and dates only, with
 nothing to quote, and the assistant is told to say so rather than invent
-something. Ask about what was actually *said* inside one conversation.
+something. Ask about what was actually *said* inside one conversation, or on
+a person's page.
 
 **Set it up in the browser** — open the Ask panel at the bottom of any
 conversation, choose a provider, paste a key, and press **Load models**. It asks
@@ -164,8 +176,8 @@ setting that determines whether the answers are worth reading. The analysis is
 mostly *noticing* — that the fastest replier is also the most disliked person,
 that a 6x growth curve is one person's arc, that a word only one person uses is
 the joke. Cheap models report the numbers back; capable models find the story.
-A question costs roughly 6 KB of input, so the price difference per question is
-fractions of a cent — optimise for quality here, not cost.
+A question costs roughly 10–50 KB of input depending on the scope, so the price
+difference per question is a cent or two — optimise for quality here, not cost.
 
 **Local models are the privacy option, not the quality option.** `ollama` and
 `lmstudio` are the same OpenAI-compatible adapter pointed at localhost, so they

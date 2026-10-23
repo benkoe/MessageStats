@@ -10,6 +10,7 @@ node build-names.mjs --write         # pull names from Contacts
 node list-chats.mjs                  # metadata only — find the ROWID
 node stats.mjs --chat <ROWID>        # the full analysis
 node stats.mjs --chat <ROWID> --merge  # ... when the chat is split (see below)
+node --test 'test/*.test.mjs'        # the tests — synthetic chat.db, no real data
 ```
 
 `chat.db` and its `-wal`/`-shm` siblings live in
@@ -215,8 +216,12 @@ about which day it was. If a query you write reports a time, say which timezone
 
 `serve.mjs` is the browser front end; it renders `analyze.mjs`, the same
 module `stats.mjs` prints from, so never teach one a number the other
-doesn’t know. `README.md` has the full detail, including how to validate the
-`attributedBody` parser against ground truth if it's ever changed.
+doesn’t know. `person.mjs` is one person across every thread they are in;
+its numbers come from `personStats()` in `analyze.mjs`, the same function the
+report reads, and the assistant's message excerpts come from `excerpts()`
+there — how and why are in `CLAUDE.local.md`. `README.md` has the full
+detail, including how to validate the `attributedBody` parser against ground
+truth if it's ever changed.
 
 ## Handling the data
 

@@ -1,6 +1,6 @@
 {
   "_comment": "Easier: open the Ask panel in the web UI and set this up there — it lists the provider's real models so you don't have to know an id. Otherwise copy to ai.local.json (gitignored) and edit.",
-  "_quality_note": "Pick the most capable model you'll pay for. ~6KB per question, so the cost difference is fractions of a cent and the quality difference is the whole feature.",
+  "_quality_note": "Pick the most capable model you'll pay for. ~10-50KB per question (statistics plus a selection of real messages), so the cost difference is a cent or two and the quality difference is the whole feature.",
 
   "_openai_chatgpt": { "provider": "openai", "model": "<see GET /v1/models>", "apiKey": "sk-..." },
   "_anthropic":      { "provider": "anthropic", "model": "claude-opus-5", "apiKey": "sk-ant-..." },
