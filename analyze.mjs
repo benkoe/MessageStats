@@ -707,6 +707,209 @@ export function loadReactions(db, ids, { byGuid, label }) {
   return { latest, reactors, laughReactors, seen: seen.size };
 }
 
+/**
+ * Words worth searching for in a question. "what did Ann say about coming
+ * over" is a question about "coming": stop words carry no topic, three-letter
+ * words are mostly names and noise, and eight terms is already a wide net.
+ */
+export function questionTerms(question) {
+  const out = [];
+  for (const w of words(String(question ?? ""))) {
+    if (w.length < 4 || STOP.has(w) || out.includes(w)) continue;
+    out.push(w);
+    if (out.length === 8) break;
+  }
+  return out;
+}
+
+const ATTACHMENT_ONLY = /^[￼\s]*$/;
+const EXCERPT_LINE_MAX = 400;
+const EXCERPT_CAPS = { reacted: 60, laughed: 60, longest: 4, repeated: 10, unanswered: 10, search: 40 };
+
+/**
+ * Real messages for the assistant to read — chosen by rule, never a dump.
+ *
+ * A conversation is tens of thousands of messages and no model gets all of
+ * them, and the first N or the latest N answers nothing reliably while
+ * reading as if it were the whole record. So the data picks: what the room
+ * reacted to or laughed at (the room's own verdict), the longest message per
+ * thread (the rants), what they say again and again, what went unanswered in
+ * a group, then a deterministic spread across every thread and every year so
+ * "how have they changed" has material, and last whatever matches the words
+ * of the question. Every line says which rule chose it, and the brief that
+ * prints these says the same, so the model knows it is reading a subset.
+ *
+ * `msgs` is one list, oldest first, each message tagged with `thread` and
+ * `isGroup` by the caller; adjacency rules only look at neighbours within
+ * the same thread. `who` restricts candidates to one person (the person
+ * scope); without it everyone is a candidate (the chat scope). `budget` is
+ * characters of text, because a line can be a word or a paragraph; search
+ * hits have their own, on top.
+ */
+export function excerpts(msgs, {
+  who = null, reactions = null, budget = 20_000, caps = {}, searchCharCap = 8_000,
+  laughWindowMs = 300_000, unansweredMs = 3_600_000, terms = [],
+} = {}) {
+  const cap = { ...EXCERPT_CAPS, ...caps };
+  const cut = (t) => (t.length > EXCERPT_LINE_MAX ? `${t.slice(0, EXCERPT_LINE_MAX)}…` : t);
+  const threadOf = (m) => m.thread ?? "";
+
+  // Neighbours within the same thread, by index into msgs.
+  const prevIn = new Map(), nextIn = new Map(), lastSeen = new Map();
+  msgs.forEach((m, i) => {
+    const t = threadOf(m), p = lastSeen.get(t);
+    if (p != null) { prevIn.set(i, p); nextIn.set(p, i); }
+    lastSeen.set(t, i);
+  });
+  const isCandidate = (m) => (!who || m.who === who) && !ATTACHMENT_ONLY.test(m.text);
+  const cands = [];
+  msgs.forEach((m, i) => { if (isCandidate(m)) cands.push(i); });
+
+  const picked = new Map();   // guid -> line
+  const counts = {};
+  let used = 0, searchUsed = 0;
+  const ref = (m) => ({ who: m.who, ms: m.ms, text: cut(m.text) });
+  const tally = (rule) => { counts[rule] = (counts[rule] ?? 0) + 1; };
+  /** Add msgs[i] under `rule`; false when the budget is spent. */
+  const add = (i, rule, { text, context = false } = {}) => {
+    const m = msgs[i];
+    const have = picked.get(m.guid);
+    if (have) {
+      if (!have.why.includes(rule)) { have.why.push(rule); tally(rule); }
+      // A line the longest rule already took can still be the one they
+      // repeat; the count is the point, so it goes on either way.
+      if (text) {
+        const nt = cut(text);
+        if (used + nt.length - have.text.length <= budget) { used += nt.length - have.text.length; have.text = nt; }
+      }
+      return true;
+    }
+    const line = { guid: m.guid, thread: threadOf(m), who: m.who, ms: m.ms, text: cut(text ?? m.text), why: [rule] };
+    if (context) {
+      const p = prevIn.get(i), n = nextIn.get(i);
+      if (p != null) line.before = ref(msgs[p]);
+      if (n != null) line.after = ref(msgs[n]);
+    }
+    const cost = line.text.length + (line.before?.text.length ?? 0) + (line.after?.text.length ?? 0);
+    if (used + cost > budget) return false;
+    used += cost;
+    picked.set(m.guid, line);
+    tally(rule);
+    return true;
+  };
+  /** Up to `n` of `list`, evenly spaced, so a cap doesn't mean "the newest". */
+  const spaced = (list, n) => {
+    if (list.length <= n) return list;
+    const k = list.length / n;
+    return Array.from({ length: n }, (_, j) => list[Math.floor(j * k)]);
+  };
+
+  // 1. Reacted — groups only; in a 1:1 the ceiling is one reactor.
+  const reactedScore = (i) => {
+    const g = msgs[i].guid;
+    return [reactions?.reactors?.get(g)?.size ?? 0, reactions?.laughReactors?.get(g)?.size ?? 0];
+  };
+  const reacted = cands.filter((i) => msgs[i].isGroup && reactedScore(i)[0] > 0)
+    .sort((a, b) => {
+      const [ra, la] = reactedScore(a), [rb, lb] = reactedScore(b);
+      return rb - ra || lb - la || msgs[b].ms - msgs[a].ms;
+    });
+  for (const i of reacted.slice(0, cap.reacted)) if (!add(i, "reacted", { context: true })) break;
+
+  // 2. Laughed at — somebody else laughed within the window. Works in a 1:1.
+  const laughed = cands.filter((i) => {
+    const n = nextIn.get(i);
+    return n != null && msgs[n].who !== msgs[i].who && msgs[n].ms - msgs[i].ms <= laughWindowMs && LAUGH.test(msgs[n].text);
+  });
+  for (const i of spaced(laughed, cap.laughed)) if (!add(i, "laughed", { context: true })) break;
+
+  // 3. Longest, per thread.
+  const byThread = new Map();
+  for (const i of cands) {
+    const t = threadOf(msgs[i]);
+    if (!byThread.has(t)) byThread.set(t, []);
+    byThread.get(t).push(i);
+  }
+  for (const idxs of byThread.values()) {
+    const top = [...idxs].sort((a, b) => msgs[b].len - msgs[a].len).slice(0, cap.longest);
+    for (const i of top) if (!add(i, "longest")) break;
+  }
+
+  // 4. Repeated — the same exact text, again and again.
+  const exact = new Map();   // normalised text -> [first index, count]
+  for (const i of cands) {
+    const key = msgs[i].text.trim().toLowerCase();
+    if (!key) continue;
+    const e = exact.get(key);
+    if (e) e[1] += 1; else exact.set(key, [i, 1]);
+  }
+  const repeated = [...exact.values()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, cap.repeated);
+  for (const [i, n] of repeated) if (!add(i, "repeated", { text: `(×${n}) ${msgs[i].text}` })) break;
+
+  // 5. Unanswered — groups only: their next message in the thread is their
+  // own, an hour or more later, with nobody in between.
+  const unanswered = cands.filter((i) => {
+    if (!msgs[i].isGroup) return false;
+    const n = nextIn.get(i);
+    return n != null && msgs[n].who === msgs[i].who && msgs[n].ms - msgs[i].ms >= unansweredMs;
+  });
+  for (const i of spaced(unanswered, cap.unanswered)) if (!add(i, "unanswered")) break;
+
+  // 6. Spread — stratified by thread and year, deterministic, fills the rest.
+  const strata = new Map();
+  for (const i of cands) {
+    if (picked.has(msgs[i].guid)) continue;
+    const key = `${threadOf(msgs[i])}|${new Date(msgs[i].ms).getFullYear()}`;
+    if (!strata.has(key)) strata.set(key, []);
+    strata.get(key).push(i);
+  }
+  if (strata.size && used < budget) {
+    const rest = [...strata.values()].flat();
+    const avg = Math.max(1, rest.reduce((s, i) => s + Math.min(msgs[i].len, EXCERPT_LINE_MAX + 1), 0) / rest.length);
+    const perStratum = Math.max(1, Math.floor((budget - used) / avg / strata.size));
+    const queues = [...strata.values()].map((idxs) => spaced(idxs, perStratum));
+    let spent = false;
+    for (let k = 0; !spent; k += 1) {
+      let any = false;
+      for (const q of queues) {
+        if (k >= q.length) continue;
+        any = true;
+        if (!add(q[k], "spread")) { spent = true; break; }
+      }
+      if (!any) break;
+    }
+  }
+
+  // 7. Search — the words of the question, and anything typed. Its own
+  // budget, on top, so a pointed question is never crowded out by the rest.
+  const needles = [...new Set(terms.map((t) => String(t).toLowerCase()).filter(Boolean))];
+  if (needles.length) {
+    let found = 0;
+    for (let c = cands.length - 1; c >= 0 && found < cap.search; c -= 1) {
+      const i = cands[c], m = msgs[i];
+      const low = m.text.toLowerCase();
+      const term = needles.find((t) => low.includes(t));
+      if (!term) continue;
+      const have = picked.get(m.guid);
+      if (have) {
+        if (!have.why.includes("search")) { have.why.push("search"); tally("search"); }
+        have.term ??= term;
+        found += 1;
+        continue;
+      }
+      const text = cut(m.text);
+      if (searchUsed + text.length > searchCharCap) break;
+      searchUsed += text.length;
+      picked.set(m.guid, { guid: m.guid, thread: threadOf(m), who: m.who, ms: m.ms, text, why: ["search"], term });
+      tally("search");
+      found += 1;
+    }
+  }
+
+  const lines = [...picked.values()].sort((a, b) => a.ms - b.ms);
+  return { lines, counts, budget, used, searchUsed };
+}
+
 export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 * 3600_000, names, canonical }) {
   const people = [...new Set(msgs.map((m) => m.who))];
   const total = msgs.length;
