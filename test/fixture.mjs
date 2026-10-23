@@ -57,9 +57,14 @@ export function makeDb(spec) {
     ins.chat.run(c.id, `chat-${c.id}`, c.ci, c.dn ?? null, c.style, c.ogid ?? null);
     for (const h of c.roster ?? []) ins.chj.run(c.id, h);
   }
+  const oneToOne = new Map(spec.chats.filter((c) => c.style !== 43 && (c.roster ?? []).length === 1).map((c) => [c.id, c.roster[0]]));
   for (const m of spec.messages) {
     const me = m.from === "me";
-    ins.msg.run(m.id, `m${m.id}`, m.text ?? null, ns(m.at), me ? 1 : 0, me ? null : m.from,
+    // Real libraries: an outgoing message in a 1:1 chat carries the
+    // counterpart's handle_id. Only group sends have none. A query that
+    // forgets is_from_me credits the owner's messages to the other person.
+    const handleId = me ? (oneToOne.get(m.chat) ?? null) : m.from;
+    ins.msg.run(m.id, `m${m.id}`, m.text ?? null, ns(m.at), me ? 1 : 0, handleId,
       me ? spec.me : null, m.amt ?? 0, m.target ?? null, m.item ?? 0);
     ins.cmj.run(m.chat, m.id);
   }

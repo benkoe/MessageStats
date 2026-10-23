@@ -79,3 +79,17 @@ test("two threads with the same name are still two threads", () => {
   const ex = excerpts(msgs, { who: "Ann", budget: 1000 });
   assert.equal(ex.lines.filter((l) => l.why.includes("laughed")).length, 0);   // Bob laughed in a different thread
 });
+
+test("a link-only message is never an excerpt, however popular", () => {
+  const t0 = Date.UTC(2023, 0, 1);
+  const url = "https://example.com/watch?v=abcdefghijklmnopqrstuvwxyz&utm_source=share";
+  const msgs = [
+    { guid: "u1", who: "Ann", ms: t0, text: url, len: url.length, thread: "Crew", threadId: 2, isGroup: true },
+    { guid: "u2", who: "Ann", ms: t0 + 1000, text: "  " + url + " ", len: url.length + 3, thread: "Crew", threadId: 2, isGroup: true },
+    { guid: "u3", who: "Ann", ms: t0 + 2000, text: "look at this " + url, len: 13 + url.length, thread: "Crew", threadId: 2, isGroup: true },
+    { guid: "b1", who: "Bob", ms: t0 + 3000, text: "lol", len: 3, thread: "Crew", threadId: 2, isGroup: true },
+  ];
+  const reactions = { reactors: new Map([["u1", new Set(["Bob", "Me"])]]), laughReactors: new Map([["u1", new Set(["Bob"])]]) };
+  const ex = excerpts(msgs, { who: "Ann", reactions, budget: 5000 });
+  assert.deepEqual(ex.lines.map((l) => l.guid), ["u3"]);   // a link with words around it still counts
+});

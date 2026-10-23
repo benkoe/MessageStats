@@ -200,9 +200,12 @@ Four traps, each of which produces plausible nonsense rather than an error:
   lists, the chat lists and the overview ranking. Use both helpers rather than
   re-deriving them, and report what you excluded.
 
-Also: outgoing messages have no `handle_id` (use `destination_caller_id` for
-"me"), and people who left a group still have messages but aren't in
-`chat_handle_join`.
+Also: **`handle_id` is not the sender.** In a group an outgoing message has
+none; in a 1:1 it carries the *counterpart's* handle. Always filter on
+`is_from_me`, and use `destination_caller_id` for "me" — a grouped count by
+handle that forgets this credits every person with your half of the
+conversation, and every 1:1 share reads 100%. People who left a group still
+have messages but aren't in `chat_handle_join`.
 
 **Every date and clock time is local to this machine.** `message.date` is an
 absolute instant and the schema stores no timezone anywhere, so the sender's own

@@ -674,6 +674,10 @@ async function openChat(id,opt){
   // saved record: `ids` there answers the same-name question, and a saved
   // {merge:false, ids:[…]} must not un-fold the siblings the sidebar has
   // already counted into the row.
+  // A person page leaves its hash behind; a chat opened from the sidebar is
+  // not that page, and a stale #person= makes the next "Ask about" click a
+  // no-op (same hash, no hashchange) and a reload land on the wrong page.
+  if(location.hash.startsWith("#person=")) history.replaceState(null,"",location.pathname);
   const saved=savedMerge(id);
   if(opt) OPT=opt;
   else if(saved) OPT={merge:saved.merge||PREFS.get("combineThreads"),ids:saved.ids??[]};

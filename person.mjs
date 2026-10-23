@@ -23,8 +23,10 @@ import { loadMessages, loadReactions, personStats, resolveMe } from "./analyze.m
  * Everyone who has ever sent a message, busiest first.
  *
  * One grouped query — no text is read — folded in JS by canonical handle so
- * an iCloud address and a phone number with an alias count once. Outgoing
- * rows have no handle_id and are not here: this is a list of other people.
+ * an iCloud address and a phone number with an alias count once. `is_from_me`
+ * is load-bearing: in a 1:1 chat the owner's own sends carry the
+ * counterpart's handle_id, so without it every person is credited with the
+ * owner's half of the conversation and every 1:1 share reads 100%.
  * Shortcodes are vending machines, not people. Two canonical handles that
  * resolve to the same name fold into the busier one: a split identity is
  * still one person on this list, and the name is what selects messages.
@@ -37,7 +39,7 @@ export function peopleDirectory(db, { names, canonical }) {
        from message m
        join chat_message_join j on j.message_id = m.ROWID
        join handle h on h.ROWID = m.handle_id
-      where ${REAL_MESSAGE_WHERE}
+      where ${REAL_MESSAGE_WHERE} and m.is_from_me = 0
       group by h.id, j.chat_id`
   ).all();
 
@@ -98,7 +100,7 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
        from message m
        join chat_message_join j on j.message_id = m.ROWID
        join handle h on h.ROWID = m.handle_id
-      where ${REAL_MESSAGE_WHERE}
+      where ${REAL_MESSAGE_WHERE} and m.is_from_me = 0
       group by h.id, j.chat_id`
   ).all();
   const mine = new Map();   // chat id -> messages from them
@@ -108,7 +110,7 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
     mine.set(r.cid, (mine.get(r.cid) ?? 0) + r.n);
     aka.add(r.hid);
   }
-  if (!mine.size) return { threads: [], others: 0, name: null, aka: [] };
+  if (!mine.size) return { threads: [], others: 0, sent: 0, name: null, aka: [] };
   // The same label loadMessages() puts on their messages — that is what
   // selects them, so the two must agree even for an unnamed number.
   const raw = [...aka][0];
@@ -187,7 +189,9 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
   for (const t of kept) again.set(t.name, (again.get(t.name) ?? 0) + 1);
   for (const t of kept) if (again.get(t.name) > 1) t.name = `${t.name} #${t.id}`;
 
-  return { threads: kept, others: threads.length - kept.length, name, aka: [...aka] };
+  // `sent` is everything they sent, loaded or not — the header's number.
+  const sent = [...mine.values()].reduce((s, n) => s + n, 0);
+  return { threads: kept, others: threads.length - kept.length, sent, name, aka: [...aka] };
 }
 
 /**
@@ -197,7 +201,7 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
  * (handle, folding preference, merge decisions).
  */
 export function personCorpus(db, { handle, names, canonical, merges = {}, combine = true, floor = 10 }) {
-  const { threads, others, name, aka } = personThreads(db, { handle, canonical, names, merges, combine, floor });
+  const { threads, others, sent, name, aka } = personThreads(db, { handle, canonical, names, merges, combine, floor });
   const msgs = [];
   const reactions = { reactors: new Map(), laughReactors: new Map() };
   let meName = null;
@@ -211,7 +215,7 @@ export function personCorpus(db, { handle, names, canonical, merges = {}, combin
     for (const [k, v] of r.laughReactors) reactions.laughReactors.set(k, v);
   }
   msgs.sort((a, b) => a.ms - b.ms);
-  return { handle, name, aka, threads, others, msgs, reactions, meName: meName ?? "Me" };
+  return { handle, name, aka, threads, others, sent, msgs, reactions, meName: meName ?? "Me" };
 }
 
 /**
@@ -220,7 +224,7 @@ export function personCorpus(db, { handle, names, canonical, merges = {}, combin
  * database, so it can be built from a cached corpus.
  */
 export function personDetail(corpus, { gap, top = 8 } = {}) {
-  const { handle, name, aka, threads, others, msgs } = corpus;
+  const { handle, name, aka, threads, others, sent, msgs } = corpus;
   const theirs = msgs.filter((m) => m.who === name);
   const rows = threads.map((t) => {
     const tm = msgs.filter((m) => m.threadId === t.id);
@@ -239,7 +243,10 @@ export function personDetail(corpus, { gap, top = 8 } = {}) {
   return {
     person: {
       // Only the *other* handles — the one behind the canonical key is them.
-      handle, name, aka: aka.filter((h) => normalizeHandle(h) !== handle && h !== name), total: theirs.length,
+      handle, name, aka: aka.filter((h) => normalizeHandle(h) !== handle && h !== name),
+      // Counted in SQL over every thread, so a person below the floor
+      // everywhere is not "0 messages" on their own page.
+      total: sent ?? theirs.length,
       first: theirs[0]?.ms ?? null, last: theirs[theirs.length - 1]?.ms ?? null,
       threadCount: threads.length, others, tz: TZ,
     },

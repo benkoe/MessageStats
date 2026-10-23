@@ -76,3 +76,12 @@ test("a person below the floor everywhere is refused with a message", async () =
   const r = await post("/api/ai/ask", { scope: "person", handle: "19999999999", question: "hi" });
   assert.match(r.error, /no messages|nothing to read/);
 });
+
+test("the library ask is still told it has no message text", async () => {
+  const r = await post("/api/ai/ask", { scope: "library", question: "who do I talk to most" });
+  assert.equal(r.error, undefined, r.error);
+  const system = stub.last.messages[0].content;
+  assert.doesNotMatch(system, /chosen subset of real messages/);
+  assert.match(system, /computed statistics, not raw message history/);
+  assert.equal(r.excerptChars, 0);
+});

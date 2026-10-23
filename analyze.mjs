@@ -723,7 +723,8 @@ export function questionTerms(question) {
   return out;
 }
 
-const ATTACHMENT_ONLY = /^[￼\s]*$/;
+/** Nothing to read once links and attachment placeholders are gone. */
+const nothingToRead = (text) => !text.replace(URL_RE, " ").replace(EMAIL_RE, " ").replace(/[\uFFFC\s]+/g, "").length;
 const EXCERPT_LINE_MAX = 400;
 const EXCERPT_CAPS = { reacted: 60, laughed: 60, longest: 4, repeated: 10, unanswered: 10, search: 40 };
 /**
@@ -771,7 +772,10 @@ export function excerpts(msgs, {
     if (p != null) { prevIn.set(i, p); nextIn.set(p, i); }
     lastSeen.set(t, i);
   });
-  const isCandidate = (m) => (!who || m.who === who) && !ATTACHMENT_ONLY.test(m.text);
+  // A pasted link is not something they said, and long tracking URLs win
+  // "longest" every time — the exact artifact the rules tell the model to
+  // call out. A link with words around it still counts.
+  const isCandidate = (m) => (!who || m.who === who) && !nothingToRead(m.text);
   const cands = [];
   msgs.forEach((m, i) => { if (isCandidate(m)) cands.push(i); });
 

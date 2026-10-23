@@ -36,5 +36,6 @@ test("detail has one row per thread with the person's numbers", () => {
 test("a person below the floor everywhere has no threads and does not throw", () => {
   const c = personCorpus(db, { handle: BOB, names, canonical, merges: {}, combine: true, floor: 10 });
   const d = personDetail(c, {});
-  assert.deepEqual(d.threads, []); assert.equal(d.person.others, 1); assert.equal(d.person.total, 0);
+  assert.deepEqual(d.threads, []); assert.equal(d.person.others, 1);
+  assert.equal(d.person.total, 2);   // what they sent, whether or not any thread was loaded
 });

@@ -67,6 +67,7 @@ function getDb() {
 /** Drop memoised analysis — after names.json changes, every label is stale. */
 function invalidate() {
   cache.clear();
+  personCache.clear();
   ids = null;
 }
 
@@ -453,16 +454,30 @@ function around(chatId, { at, merge, mergeIds, span = 40 }) {
  * the grounding rules sit — so it gets a quarter and the UI says so.
  */
 const EXCERPT_BUDGET = { chat: 20_000, person: 40_000 };
+const EXCERPT_SEARCH_CAP = 8_000;
 const LOCAL_BUDGET_SCALE = 0.25;
 const budgetFor = (scope, cfg) => Math.round(EXCERPT_BUDGET[scope] * (cfg.local ? LOCAL_BUDGET_SCALE : 1));
+// The search layer sits on top of the budget, so it scales the same way or a
+// local model's prompt is front-truncated anyway.
+const searchCapFor = (cfg) => Math.round(EXCERPT_SEARCH_CAP * (cfg.local ? LOCAL_BUDGET_SCALE : 1));
 /** Threads where someone sent fewer messages than this are counted, not read. The env hook is for tests. */
 const PERSON_FLOOR = Number(process.env.MESSAGESTATS_PERSON_FLOOR) || 10;
 
-const AI_RULES = `You are given computed statistics plus a chosen subset of real messages — so ground every
+/**
+ * What the context is, per scope — in front of the shared rules. The chat and
+ * person asks carry real quoted lines; the library ask carries none, and
+ * telling it otherwise invites an invented quote.
+ */
+const AI_GROUNDING = {
+  chat: `You are given computed statistics plus a chosen subset of real messages — so ground every
 claim in the numbers and the quoted lines you were given, quote only verbatim, and never invent a
-quote, a name, or a figure.
+quote, a name, or a figure.`,
+  library: `You are given computed statistics, not raw message history — so ground every claim in the
+numbers you were given and never invent a quote, a name, or a figure.`,
+};
+AI_GROUNDING.person = AI_GROUNDING.chat;
 
-What good looks like:
+const AI_RULES = `What good looks like:
 - Lead with the two or three findings that actually land. Don't reformat the table back.
 - Say what a number means about these people, not just what it is.
 - Call out artifacts rather than reporting them straight: object-replacement characters are
@@ -499,7 +514,8 @@ It is a bird's-eye view: who this person talks to, how much, and how that has mo
 years. Compare people to each other and to their own past — that is what these numbers support.`,
 };
 
-const systemFor = (scope, preset) => `${AI_SCOPES[scope] ?? AI_SCOPES.chat}\n${AI_RULES}\n\n${preset.prompt}`;
+const systemFor = (scope, preset) =>
+  `${AI_SCOPES[scope] ?? AI_SCOPES.chat}\n${AI_GROUNDING[scope] ?? AI_GROUNDING.chat}\n\n${AI_RULES}\n\n${preset.prompt}`;
 
 /**
  * Tone presets. Each is appended to the scope line and AI_RULES; the grounding
@@ -880,14 +896,26 @@ function mergesDigest() {
  * by the folding preference and the merge decisions because both change
  * which rows make up a thread. invalidate() clears it with everything else.
  */
+// Only the last few corpora are kept: one is every message object in every
+// thread they are in — 125–150 MB of heap for a busy person — so the general
+// cache would hold a gigabyte after ten clicks. Misses are not kept at all,
+// since any page can GET ?handle=anything.
+const PERSON_CACHE_MAX = 2;
+const personCache = new Map();   // insertion-ordered: oldest first
 function personCorpusCached(handle, combine) {
   const d = getDb();
   if (!d) return null;
   const key = `person|${handle}|${combine}|${mergesDigest()}`;
-  if (cache.has(key)) return cache.get(key);
+  if (personCache.has(key)) {
+    const hit = personCache.get(key);
+    personCache.delete(key); personCache.set(key, hit);   // most recent last
+    return hit;
+  }
   const { names, canonical } = identities();
   const corpus = personCorpus(d, { handle, names, canonical, merges: readMerges(), combine, floor: PERSON_FLOOR });
-  cache.set(key, corpus);
+  if (!corpus.name) return corpus;
+  personCache.set(key, corpus);
+  while (personCache.size > PERSON_CACHE_MAX) personCache.delete(personCache.keys().next().value);
   return corpus;
 }
 
@@ -954,7 +982,8 @@ async function aiAsk({ scope, chatId, handle, merge, mergeIds, combine, question
     if (!corpus.name) throw new Error(`no messages from ${handle}`);
     const D = personDetail(corpus, { top: 8 });
     if (!D.threads.length) throw new Error(`${corpus.name} has fewer than ${PERSON_FLOOR} messages in every conversation — nothing to read.`);
-    const ex = excerpts(corpus.msgs, { who: corpus.name, reactions: corpus.reactions, budget: budgetFor("person", cfg), terms });
+    const ex = excerpts(corpus.msgs, { who: corpus.name, reactions: corpus.reactions,
+      budget: budgetFor("person", cfg), searchCharCap: searchCapFor(cfg), terms });
     context = personBrief(D, ex);
     subject = corpus.name;
     // By name, not handle: adding an alias later changes the handle and would
@@ -975,7 +1004,7 @@ async function aiAsk({ scope, chatId, handle, merge, mergeIds, combine, question
     const { msgs, byGuid, label } = loadMessages(d, resolved.ids, { names, canonical, meName });
     for (const m of msgs) { m.thread = A.chat.name; m.isGroup = A.chat.isGroup; }
     const reactions = loadReactions(d, resolved.ids, { byGuid, label });
-    const ex = excerpts(msgs, { reactions, budget: budgetFor("chat", cfg), terms });
+    const ex = excerpts(msgs, { reactions, budget: budgetFor("chat", cfg), searchCharCap: searchCapFor(cfg), terms });
     context = brief(A, { search: s, excerpts: ex });
     subject = A.chat.name;
     key = chatId;
