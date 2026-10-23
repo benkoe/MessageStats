@@ -648,6 +648,65 @@ export function personStats(msgs, { gap = 6 * 3600_000, top = 10, minUses } = {}
   return { rows, minUses: floor, wordsBy, totalWordsBy, firstUse, emojiAll };
 }
 
+/**
+ * Tapback state for these chats, resolved: who reacted to which message.
+ *
+ * 2000–2007 add a tapback, 3000–3007 take one back. Reading only the adds
+ * counts a reaction somebody removed; ordering by date and keeping the last
+ * state per (reactor, part-qualified guid) settles both removals and changes.
+ * The any-emoji reaction (type 2006) keeps the chosen emoji in its own
+ * column — newer than the rest of this table, hence the guard.
+ *
+ * `reactors` counts *people* per message, not tapback rows. A tapback targets
+ * one *part*, and `associated_message_guid` carries the part as a prefix:
+ * `p:3/<guid>`. A photo dump is one message with many parts, so one person
+ * hearting fifteen of eighteen photos produced "15×" in a two-person chat.
+ * Distinct reactors bounds the number by the roster, which is the only
+ * reading that means anything. `laughReactors` is the subset who laughed —
+ * what the excerpt picker ranks by.
+ */
+export function loadReactions(db, ids, { byGuid, label }) {
+  const holes = ids.map(() => "?").join(",");
+  const hasEmojiCol = hasColumns(db, "message", "associated_message_emoji");
+  const taps = db
+    .prepare(
+      `select m.guid self, m.associated_message_guid guid,
+              m.associated_message_type amt, m.is_from_me fromMe, h.id handle,
+              ${hasEmojiCol ? "m.associated_message_emoji" : "null"} emoji
+         from message m
+         join chat_message_join j on j.message_id = m.ROWID
+         left join handle h on h.ROWID = m.handle_id
+        where j.chat_id in (${holes})
+          and m.associated_message_type between 2000 and 3007
+        order by m.date asc`
+    )
+    .all(...ids);
+
+  const last = new Map();       // "reactor|part-qualified guid" -> row
+  const seen = new Set();
+  for (const t of taps) {
+    if (seen.has(t.self)) continue;         // one message can sit in two chats
+    seen.add(t.self);
+    last.set(`${label(t.handle, t.fromMe === 1)}|${t.guid ?? ""}`, t);
+  }
+  const latest = [], reactors = new Map(), laughReactors = new Map();
+  for (const t of last.values()) {
+    if (t.amt >= 3000) continue;            // taken back — never happened
+    const who = label(t.handle, t.fromMe === 1);
+    // associated_message_guid is prefixed, e.g. "p:0/<guid>" — take the tail
+    const target = t.guid?.includes("/") ? t.guid.split("/").pop() : t.guid ?? "";
+    latest.push({ self: t.self, guid: t.guid, amt: t.amt, who, emoji: t.emoji, target });
+    if (!byGuid.get(target)) continue;
+    if (!reactors.has(target)) reactors.set(target, new Set());
+    reactors.get(target).add(who);
+    if (TAPBACK_KINDS[t.amt] === "laughed at") {
+      if (!laughReactors.has(target)) laughReactors.set(target, new Set());
+      laughReactors.get(target).add(who);
+    }
+  }
+  return { latest, reactors, laughReactors, seen: seen.size };
+}
+
 export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 * 3600_000, names, canonical }) {
   const people = [...new Set(msgs.map((m) => m.who))];
   const total = msgs.length;
@@ -871,64 +930,20 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   const departed = people.filter((p) => p !== me && !rosterNow.has(p));
 
   /* ---- tapbacks ---- */
-  // 2000–2007 add a tapback, 3000–3007 take one back. Reading only the adds
-  // counts a reaction somebody removed; ordering by date and keeping the last
-  // state per (part, reactor) settles both removals and changes.
-  // The any-emoji reaction (type 2006) keeps the chosen emoji in its own
-  // column, so "emoji 93" can say which ones instead of standing for all of
-  // them. Newer than the rest of this table, hence the guard.
-  const hasEmojiCol = hasColumns(db, "message", "associated_message_emoji");
-  const taps = db
-    .prepare(
-      `select m.guid self, m.associated_message_guid guid,
-              m.associated_message_type amt, m.is_from_me fromMe, h.id handle,
-              ${hasEmojiCol ? "m.associated_message_emoji" : "null"} emoji
-         from message m
-         join chat_message_join j on j.message_id = m.ROWID
-         left join handle h on h.ROWID = m.handle_id
-        where j.chat_id in (${holes})
-          and m.associated_message_type between 2000 and 3007
-        order by m.date asc`
-    )
-    .all(...ids);
-
+  const R = loadReactions(db, ids, { byGuid, label });
+  const { reactors } = R;
   const given = new Map(), received = new Map(), kinds = new Map();
-  /**
-   * How many *people* reacted to a message — not how many tapback rows it has.
-   *
-   * A tapback targets one *part*, and `associated_message_guid` carries the
-   * part as a prefix: `p:3/<guid>`. A message that is a photo dump is one
-   * message with many parts, so one person hearting fifteen of eighteen photos
-   * produced "15×" in a two-person chat. Counting distinct reactors bounds the
-   * number by the roster, which is the only reading that means anything.
-   */
-  const reactors = new Map();   // target guid -> Set of people
-  const latest = new Map();     // "reactor|part-qualified guid" -> amt
-  const seenTaps = new Set();
-  for (const t of taps) {
-    if (seenTaps.has(t.self)) continue;
-    seenTaps.add(t.self);
-    latest.set(`${label(t.handle, t.fromMe === 1)}|${t.guid ?? ""}`, t);
-  }
   const kindsBy = new Map();   // person -> kind -> n, for the per-person mix
   const customEmoji = new Map();
-  for (const t of latest.values()) {
-    if (t.amt >= 3000) continue;               // taken back — never happened
-    const who = label(t.handle, t.fromMe === 1);
+  for (const t of R.latest) {
     const kind = TAPBACK_KINDS[t.amt] ?? String(t.amt);
     if (t.emoji) inc(customEmoji, t.emoji);
-    inc(given, who);
+    inc(given, t.who);
     inc(kinds, kind);
-    if (!kindsBy.has(who)) kindsBy.set(who, new Map());
-    inc(kindsBy.get(who), kind);
-    // associated_message_guid is prefixed, e.g. "p:0/<guid>" — take the tail
-    const target = t.guid?.includes("/") ? t.guid.split("/").pop() : t.guid ?? "";
-    const hit = byGuid.get(target);
-    if (hit) {
-      inc(received, hit.who);
-      if (!reactors.has(target)) reactors.set(target, new Set());
-      reactors.get(target).add(who);
-    }
+    if (!kindsBy.has(t.who)) kindsBy.set(t.who, new Map());
+    inc(kindsBy.get(t.who), kind);
+    const hit = byGuid.get(t.target);
+    if (hit) inc(received, hit.who);
   }
   const perMsg = new Map([...reactors].map(([g, s]) => [g, s.size]));
 
@@ -1334,8 +1349,8 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       fastest: fastest && { ms: fastest.dt, reply: msgRef(fastest.m), to: msgRef(fastest.prev) },
       matrix,
     },
-    tapbacks: seenTaps.size === 0 ? null : {
-      total: seenTaps.size,
+    tapbacks: R.seen === 0 ? null : {
+      total: R.seen,
       kinds: topN(kinds, 9).map(([kind, n]) => ({ kind, n, icon: TAPBACK_ICONS[kind] ?? "•" })),
       // Which emoji people actually picked, rather than "emoji, 93 of them".
       customEmoji: topN(customEmoji, 10).map(([emoji, n]) => ({ emoji, n })),
