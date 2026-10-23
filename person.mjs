@@ -15,8 +15,9 @@
  */
 import {
   appleMicrosToMs, chatSummaries, DATE_TO_MICROS, findSiblingChats, isShortcode,
-  normalizeHandle, REAL_MESSAGE_WHERE,
+  normalizeHandle, REAL_MESSAGE_WHERE, TZ,
 } from "./lib.mjs";
+import { loadMessages, loadReactions, personStats, resolveMe } from "./analyze.mjs";
 
 /**
  * Everyone who has ever sent a message, busiest first.
@@ -101,13 +102,17 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
       group by h.id, j.chat_id`
   ).all();
   const mine = new Map();   // chat id -> messages from them
-  let raw = null;
+  const aka = new Set();    // the raw handles behind this canonical one
   for (const r of rows) {
     if (canonical(normalizeHandle(r.hid)) !== handle) continue;
     mine.set(r.cid, (mine.get(r.cid) ?? 0) + r.n);
-    raw ??= r.hid;
+    aka.add(r.hid);
   }
-  if (!mine.size) return { threads: [], others: 0 };
+  if (!mine.size) return { threads: [], others: 0, name: null, aka: [] };
+  // The same label loadMessages() puts on their messages — that is what
+  // selects them, so the two must agree even for an unnamed number.
+  const raw = [...aka][0];
+  const name = names.get(handle) ?? raw;
 
   // Union-find over chat ids: strict siblings, then remembered decisions.
   const parent = new Map();
@@ -151,9 +156,9 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
     for (const id of ids) if ((totals.get(id)?.n ?? 0) > (totals.get(anchor)?.n ?? 0)) anchor = id;
     const c = meta.get(anchor);
     const isGroup = c.style === 43;
-    const name = c.dn?.trim() || (isGroup ? "(unnamed group)" : names.get(handle) ?? raw);
     return {
-      id: anchor, ids: [anchor, ...ids.filter((id) => id !== anchor)], name, isGroup,
+      id: anchor, ids: [anchor, ...ids.filter((id) => id !== anchor)], isGroup,
+      name: c.dn?.trim() || (isGroup ? "(unnamed group)" : name),
       n: ids.reduce((s, id) => s + (mine.get(id) ?? 0), 0),
     };
   }).sort((a, b) => Number(a.isGroup) - Number(b.isGroup) || b.n - a.n || a.id - b.id);
@@ -161,5 +166,62 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
   return {
     threads: threads.filter((t) => t.n >= floor),
     others: threads.filter((t) => t.n < floor).length,
+    name, aka: [...aka],
+  };
+}
+
+/**
+ * Everything the person scope reads: every thread above the floor, loaded,
+ * tagged with its thread, concatenated oldest-first, plus the tapback state
+ * across all of them. The expensive object — serve.mjs caches it per
+ * (handle, folding preference, merge decisions).
+ */
+export function personCorpus(db, { handle, names, canonical, merges = {}, combine = true, floor = 10 }) {
+  const { threads, others, name, aka } = personThreads(db, { handle, canonical, names, merges, combine, floor });
+  const msgs = [];
+  const reactions = { reactors: new Map(), laughReactors: new Map() };
+  let meName = null;
+  for (const t of threads) {
+    const me = resolveMe(db, t.ids, { names, canonical });
+    meName ??= me;
+    const loaded = loadMessages(db, t.ids, { names, canonical, meName: me });
+    for (const m of loaded.msgs) msgs.push({ ...m, thread: t.name, threadId: t.id, isGroup: t.isGroup });
+    const r = loadReactions(db, t.ids, { byGuid: loaded.byGuid, label: loaded.label });
+    for (const [k, v] of r.reactors) reactions.reactors.set(k, v);
+    for (const [k, v] of r.laughReactors) reactions.laughReactors.set(k, v);
+  }
+  msgs.sort((a, b) => a.ms - b.ms);
+  return { handle, name, aka, threads, others, msgs, reactions, meName: meName ?? "Me" };
+}
+
+/**
+ * The person page: a header and one row per thread with *their* numbers in
+ * it, from personStats() — the same rows the chat report prints. Pure: no
+ * database, so it can be built from a cached corpus.
+ */
+export function personDetail(corpus, { gap, top = 8 } = {}) {
+  const { handle, name, aka, threads, others, msgs } = corpus;
+  const theirs = msgs.filter((m) => m.who === name);
+  const rows = threads.map((t) => {
+    const tm = msgs.filter((m) => m.threadId === t.id);
+    const row = personStats(tm, { gap, top }).rows.get(name) ?? null;
+    if (row) {
+      row.topWords = row.topWords.slice(0, top);
+      row.signature = row.signature.slice(0, top);
+    }
+    return {
+      id: t.id, ids: t.ids, name: t.name, isGroup: t.isGroup, n: t.n,
+      total: tm.length, share: tm.length ? t.n / tm.length : 0,
+      first: tm[0]?.ms ?? null, last: tm[tm.length - 1]?.ms ?? null,
+      row,
+    };
+  });
+  return {
+    person: {
+      handle, name, aka: aka.filter((h) => h !== name), total: theirs.length,
+      first: theirs[0]?.ms ?? null, last: theirs[theirs.length - 1]?.ms ?? null,
+      threadCount: threads.length, others, tz: TZ,
+    },
+    threads: rows,
   };
 }

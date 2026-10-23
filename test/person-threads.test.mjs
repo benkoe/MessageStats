@@ -38,5 +38,5 @@ test("combine off keeps siblings apart", () => {
 
 test("a handle nobody sent from has no threads", () => {
   const r = personThreads(db, { handle: "19999999999", canonical, names, floor: 1 });
-  assert.deepEqual(r, { threads: [], others: 0 });
+  assert.deepEqual(r.threads, []); assert.equal(r.others, 0); assert.equal(r.name, null);
 });
