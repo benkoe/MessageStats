@@ -25,6 +25,7 @@ test("detail has one row per thread with the person's numbers", () => {
   assert.equal(d.person.threadCount, 3);
   assert.equal(d.person.name, "Ann");
   assert.equal(d.person.handle, ANN);
+  assert.deepEqual(d.person.aka, []);   // one handle, no aliases: nothing to list
   const one = d.threads.find((t) => t.id === 1);
   assert.equal(one.n, 5); assert.equal(one.total, 7);
   assert.deepEqual(one.row.byYear, { 2022: 1, 2023: 3, 2024: 1 });

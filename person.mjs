@@ -238,7 +238,8 @@ export function personDetail(corpus, { gap, top = 8 } = {}) {
   });
   return {
     person: {
-      handle, name, aka: aka.filter((h) => h !== name), total: theirs.length,
+      // Only the *other* handles — the one behind the canonical key is them.
+      handle, name, aka: aka.filter((h) => normalizeHandle(h) !== handle && h !== name), total: theirs.length,
       first: theirs[0]?.ms ?? null, last: theirs[theirs.length - 1]?.ms ?? null,
       threadCount: threads.length, others, tz: TZ,
     },

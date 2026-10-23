@@ -599,12 +599,36 @@ function renderChats(list){
     box.append(b);
   }
 }
+/* Everyone who has sent a message, loaded the first time the filter is used.
+   Typing a name offers the person view above the matching conversations. */
+let PEOPLE=null;
+async function loadPeople(){
+  if(PEOPLE) return PEOPLE;
+  try{ PEOPLE=await api("/api/people"); }catch{ PEOPLE=[]; }
+  return PEOPLE;
+}
 /* Re-draw the list without losing whatever is typed in the filter. */
 function refreshChats(){
   const q=($("#filter").value||"").toLowerCase();
   renderChats(q? CHATS.filter(c=>(c.name+" "+c.people.join(" ")).toLowerCase().includes(q)) : CHATS);
+  if(!q) return;
+  const people=(PEOPLE||[]).filter(p=>p.name.toLowerCase().includes(q)).slice(0,3);
+  if(!people.length) return;
+  const box=$("#chatlist");
+  for(const p of people.reverse()){
+    const b=el("button",{class:"chat",onclick:()=>{ location.hash="person="+encodeURIComponent(p.handle); }},
+      el("div",{class:"t"},el("span",{class:"n"},"Ask about "+p.name),el("span",{class:"c"},N(p.n))),
+      el("div",{class:"p"},"across every conversation they are in"));
+    b.dataset.id="person:"+p.name;
+    box.prepend(b);
+  }
 }
-$("#filter").addEventListener("input",refreshChats);
+$("#filter").addEventListener("input",()=>{
+  refreshChats();
+  // The directory is one grouped query over every message row — fetched on
+  // the first keystroke, not at boot, and the list redraws when it lands.
+  if($("#filter").value && !PEOPLE) loadPeople().then(refreshChats);
+});
 
 /* ---------- chat detail ---------- */
 /**
@@ -1172,6 +1196,15 @@ const SUGGESTED_LIBRARY = [
   "Who should I text back first?",
   "Write the year-in-review nobody asked for",
 ];
+/* The person scope's own. Different in kind again: one person across rooms,
+   and answers that only real excerpts can carry. */
+const SUGGESTED_PERSON = [
+  "How are they different in the group chats versus one-on-one?",
+  "What do they bring up unprompted, again and again?",
+  "Write their introduction for a toast, from the excerpts only.",
+  "How has the way they write changed over the years?",
+  "Which of these messages would they least like read aloud?",
+];
 
 /**
  * Setup, in the browser. Pick a provider, paste a key, then load the model list
@@ -1268,7 +1301,9 @@ function markAsking(key,busy){
   // The library ask belongs to the Everything button, which is a .chat with no
   // data-id — same dot, same place, so a running ask looks the same wherever
   // it was started from.
-  const row = key==="library" ? $("#ovbtn") : document.querySelector(`.chat[data-id="${key}"]`);
+  // A person ask is reached from Everything too, so it lights the same button.
+  const row = (key==="library" || String(key).startsWith("person:")) ? $("#ovbtn")
+    : document.querySelector(`.chat[data-id="${key}"]`);
   if(row) row.classList.toggle("asking",busy);
 }
 
@@ -1372,7 +1407,7 @@ function askPanel(target){
         el("button",{class:"act",onclick:()=>exportAnswer(r,asked,secs,status)},"Export"),
         status));
       out.append(el("p",{class:"sub",style:"margin-top:8px"},
-        `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars of statistics"}${secs?" · "+secs+"s":""}`));
+        `${r.toneLabel} · ${r.provider} · ${r.model} · ${r.local?"ran locally":"sent "+N(r.contextChars)+" chars"+(r.excerptChars?", "+N(r.excerptChars)+" of them message text":" of statistics")}${secs?" · "+secs+"s":""}`));
     };
 
     /* Everything that must not be clickable twice. Driven off the ASKS entry
@@ -1430,11 +1465,18 @@ function askPanel(target){
       showEntry(entry);
     };
     q.addEventListener("keydown",e=>{if(e.key==="Enter")run();});
+    // What leaves the machine, said plainly, because it differs by scope: the
+    // chat and person asks now send a selection of actual messages, the
+    // library ask sends totals only. A local model reads a smaller selection
+    // because its context window is short.
+    const sendsText = target.sends==="messages";
     card.append(
       el("p",{class:"sub"},
         target.note ? target.note+" " : "",
-        cfg.local ? `Running on ${cfg.label} — nothing leaves this machine.`
-                  : `Using ${cfg.label} (${cfg.model}). Statistics are sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`),
+        cfg.local ? `Running on ${cfg.label} — nothing leaves this machine.`+(sendsText?" A smaller selection of messages is read, because a local model's context is short.":"")
+                  : sendsText
+                    ? `Using ${cfg.label} (${cfg.model}). A selection of actual messages plus statistics is sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`
+                    : `Using ${cfg.label} (${cfg.model}). Statistics are sent to the provider; every request is logged to ai-sent.local.jsonl so you can check what left.`),
       el("div",{class:"row",style:"margin-bottom:8px"},q,scope,tone,askBtn),
       el("div",{style:"margin-bottom:10px"},target.suggestions.map(s=>
         el("span",{class:"chip",style:"cursor:pointer",onclick:()=>{q.value=s;run();}},s))),
@@ -1479,6 +1521,7 @@ const chatAsk = (A)=>({
   placeholder: "Ask anything about this conversation…",
   suggestions: SUGGESTED,
   search: true,
+  sends: "messages",
   body: (question,searchFor)=>({chatId:A.chat.id,merge:OPT.merge,ids:OPT.ids,question,search:searchFor}),
 });
 
@@ -1487,12 +1530,70 @@ const libraryAsk = ()=>({
   placeholder: "Ask anything about all your conversations…",
   suggestions: SUGGESTED_LIBRARY,
   search: false,
+  sends: "totals",
   // Worth saying rather than leaving to be assumed: this context is smaller
   // than a single conversation's, because the overview reads no message text
   // at all. Nobody would guess that the library-wide ask sends *less*.
   note: "It sees the totals on this page — who you talk to, how much, and when — and no message text at all, because none was read to build them.",
   body: (question)=>({scope:"library",combine:PREFS.get("combineThreads"),question}),
 });
+
+/* One person across every conversation they are in. Keyed by name, like the
+   history file, so an alias added later does not orphan the saved answers. */
+const personAsk = (D)=>({
+  key: "person:"+D.person.name,
+  placeholder: "Ask anything about "+D.person.name+" across every conversation…",
+  suggestions: SUGGESTED_PERSON,
+  search: true,
+  sends: "messages",
+  body: (question,searchFor)=>({scope:"person",handle:D.person.handle,combine:PREFS.get("combineThreads"),question,search:searchFor}),
+});
+
+/**
+ * The person page: who they are, the conversations they are in with their
+ * own numbers in each, and the ask. No charts — the page exists to hold the
+ * ask, and a row opens the conversation for the rest.
+ */
+async function renderPerson(handle,gen=newPage()){
+  const m=$("#main"); m.innerHTML=""; resetCards();
+  CUR=null;
+  for(const b of document.querySelectorAll(".chat")) b.setAttribute("aria-current","false");
+  m.append(el("p",{class:"muted"},"Reading their conversations…"));
+  let R;
+  try{ R=await api(`/api/person?handle=${encodeURIComponent(handle)}&combine=${PREFS.get("combineThreads")?1:0}`); }
+  catch(e){
+    if(gen!==PAGE) return;
+    m.innerHTML="";
+    m.append(el("div",{class:"flag warn"},el("div",{},el("b",{},"Couldn't read that person. "),esc(e.message))));
+    return;
+  }
+  if(gen!==PAGE) return;
+  m.innerHTML="";
+  const P=R.person;
+  m.append(el("h1",{},P.name));
+  m.append(el("p",{class:"sub"},
+    `${N(P.total)} messages from them across ${N(P.threadCount)} conversation${P.threadCount===1?"":"s"}`+
+    (P.first?` · ${D(P.first)} → ${D(P.last)}`:"")+
+    (P.aka.length?` · also ${P.aka.join(", ")}`:"")+
+    (P.others?` · plus ${N(P.others)} conversation${P.others===1?"":"s"} with fewer than 10 messages from them, not read`:"")));
+  if(R.threads.length){
+    const rows=R.threads.map(t=>{
+      const tr=el("tr",{class:"clickrow"},
+        el("td",{},t.name+(t.isGroup?"":" (one-to-one)")),el("td",{},N(t.n)),el("td",{},`${(t.share*100).toFixed(0)}%`),
+        el("td",{},t.row?Object.entries(t.row.byYear).map(([y,n])=>`${y}: ${N(n)}`).join(" · "):"—"),
+        el("td",{},D(t.first)),el("td",{},D(t.last)));
+      tr.addEventListener("click",()=>{ location.hash=""; openChat(t.id); });
+      return tr;
+    });
+    const t=el("table",{},el("thead",{},el("tr",{},...["conversation","their messages","share","by year","first","latest"].map(c=>el("th",{},c)))));
+    t.append(el("tbody",{},...rows));
+    m.append(card("Conversations",el("div",{class:"scroll"},t),
+      "Every conversation with 10 or more messages from them, folded the way the sidebar folds threads. Click a row to open it."));
+    m.append(askPanel(personAsk(R)));
+  } else {
+    m.append(el("p",{class:"muted"},`No conversation has 10 or more messages from ${P.name}, so there is nothing for the assistant to read.`));
+  }
+}
 
 const manualCard=()=>el("div",{class:"card"},
   el("h2",{},"Option B — copy it yourself"),
@@ -2011,12 +2112,15 @@ async function renderOverview(mount,gen){
       const tr=el("tr",{class:"clickrow"},
         el("td",{},p.name),el("td",{},N(p.n)),el("td",{},N(p.sent)),el("td",{},N(p.received)),
         el("td",{},D(p.first)),el("td",{},D(p.last)));
-      if(p.chats.length) tr.addEventListener("click",()=>openChat(p.chats[0]));
+      // The person view, not their busiest chat: it lists every conversation
+      // they are in, and opens any of them from there.
+      if(p.handle) tr.addEventListener("click",()=>{ location.hash="person="+encodeURIComponent(p.handle); });
+      else if(p.chats.length) tr.addEventListener("click",()=>openChat(p.chats[0]));
       return tr;
     });
     box.append(card("The people you actually message",
       peopleTable(rows,["person","messages","you sent","they sent","first","latest"]),
-      "One-to-one only, folded across split threads — an old SMS thread and a newer iMessage one count once, together. Click a row to open it."));
+      "One-to-one only, folded across split threads — an old SMS thread and a newer iMessage one count once, together. Click a row to see them across every conversation."));
   }
 
   if(O.groups.length){
@@ -2118,13 +2222,20 @@ $("#setbtn").addEventListener("click",()=>{
 });
 // The app's Settings menu item navigates the web view to #settings rather than
 // needing a JavaScript bridge into the sealed Swift binary.
-addEventListener("hashchange",()=>{ if(location.hash==="#settings") renderSettings(); });
+/* #person=<handle> is a page of its own, so reload and back work like Settings. */
+const personHash=()=>{ const m=/^#person=(.+)$/.exec(location.hash); return m? decodeURIComponent(m[1]) : null; };
+addEventListener("hashchange",()=>{
+  if(location.hash==="#settings") renderSettings();
+  else if(personHash()!=null) renderPerson(personHash());
+});
 // Merge decisions must be in hand before any conversation opens, or the first
 // chat of the session ignores them.
 loadMerges().then(()=>{
   if(location.hash==="#settings"){
     // Still needs the chat list in the sidebar, so boot first, then swap the pane.
     boot(true).then(renderSettings);
+  } else if(personHash()!=null){
+    boot(true).then(()=>renderPerson(personHash()));
   } else boot();
 });
 </script>
