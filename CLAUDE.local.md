@@ -554,6 +554,131 @@ presets: at library scale the questions worth asking are comparisons — one
 person against another, or against their own past — which is precisely what the
 overview supports and a single conversation cannot.
 
+### The assistant reads messages now: three scopes and the excerpt layer
+
+For a long time both assistants were fed statistics only. `brief()` carried a
+conversation's numbers plus the handful of quoted lines a report happens to
+surface (longest message, fastest reply, most-repeated, most-reacted) and
+`libraryBrief()` carried the Everything page with no text at all. The question
+that exposed it was a wedding roast: "roast this person" had nothing to roast
+*from*, and nothing could look at one person across the 1:1 thread and the
+groups they are in. The fix is general — the assistant now reads actual
+messages in two of its three scopes — and roast stays a tone, not a feature.
+
+**Three scopes.** `chat` (one conversation), `person` (one person across every
+conversation they have sent a message in), `library` (Everything, still
+numbers only: the whole library has no bounded selection and `overview()`
+deliberately never opens a message). `AI_SCOPES` has a line per scope;
+`AI_RULES` opens by saying the context is statistics *plus a chosen subset of
+real messages*, quote only verbatim. The history key for a person is
+`person:<name>` — by name, not handle, so adding an alias later does not
+orphan the saved answers.
+
+**Why not a dump.** A person is tens of thousands of messages across threads
+and no model gets all of them; the first N or the latest N answers nothing
+reliably while reading as if it were the whole record. So the data picks.
+`excerpts()` in `analyze.mjs` applies seven rules in priority order — reacted
+to by the room (groups only; distinct reactors, laughs ranked above), somebody
+else laughed within five minutes (the 1:1 equivalent), longest per thread,
+said again and again, went unanswered in a group (their own next message an
+hour or more later), a deterministic spread stratified by thread and year, and
+last the words of the question plus any typed term, run as substring searches
+with their own budget on top. Every line carries the rule that chose it, and
+`renderExcerpts()` opens by saying so and that this is a subset — a model
+reading real quotes otherwise treats them as the full record.
+
+Two things the first real run taught, both now tests in `test/excerpts.test.mjs`:
+
+- **The targeted rules will eat the whole budget if allowed to.** On a
+  26-thread person, longest-per-thread alone took 25k of a 40k budget and ten
+  threads got no line at all. Rules 1–5 are capped at 60% (`SPREAD_RESERVE`),
+  the longest rule is taken rank-by-rank across threads rather than thread by
+  thread, and the spread round-robins the strata so every thread gets its first
+  line before any gets a second.
+- **A pasted link is not something they said.** URL-only lines were 7 of 57
+  "longest" picks on real data — long tracking URLs win that rule every time,
+  which is the exact artifact `AI_RULES` tells the model to call out. A
+  candidate must have something left once links, emails and attachment
+  placeholders are stripped; a link with words around it still counts.
+- **Thread *name* is not thread identity.** Ten of those threads shared one
+  display name (unnamed groups). Neighbours and strata are keyed by `threadId`,
+  `personThreads()` names unnamed groups by roster as the overview does, and
+  same-named threads get their span appended — `Crew (2023–2024)` — then `#id`
+  if that still collides.
+
+**The grounding sentence is per scope.** `AI_GROUNDING` says "statistics plus
+a chosen subset of real messages" for chat and person and "statistics, not raw
+message history" for the library — one shared sentence told the library ask it
+had quotes, which is the one thing that scope must never believe.
+
+**Budgets** are characters, not lines, because a line can be a word or a
+paragraph: `EXCERPT_BUDGET` is 20k for a chat, 40k for a person, lines cut at
+400 chars. The one exception to "not a setting" is a local model
+(`cfg.local`): Ollama's default context is a few thousand tokens and it
+truncates from the *front* of the prompt — where the grounding rules sit — so
+it gets a quarter and the ask panel says so. The answer footer prints "sent N
+chars, M of them message text" (`excerptChars`), and the disclosure line above
+the question box says a selection of actual messages leaves the machine,
+because that is a different promise from the one the library ask makes.
+
+**Where the per-person numbers come from.** `personStats(msgs)` in
+`analyze.mjs` is now the single source of everything about one sender that
+can be known from the messages alone — by year, peak hour, reply time,
+double-texts, laughs, questions, top words, emoji, signature words. `analyze()`
+reads its `perPerson` fields from it, and the person page reads the same rows
+for each thread, so a report and a person page print the same number for the
+same thread because they ran the same code. The refactor was checked by a
+golden snapshot on the fixture and a byte-for-byte diff of a real 162k-message
+group report. `loadReactions()` was extracted from `analyze()` the same way,
+because the excerpt picker needs reactor sets per message.
+
+**Who can be a person.** Anyone who has sent a message: `peopleDirectory()` in
+`person.mjs` is one grouped query (no text), folded by canonical handle, with
+shortcodes out and two handles that share a name without an alias folded under
+the busier one. The person is keyed by canonical handle in URLs, API and
+caches (`#person=<handle>`, `/api/person?handle=`), and their messages are
+selected by the display *name* it resolves to, which is how every other stat is
+keyed. `shape()` in `overview()` exposes `handle` for exactly this.
+
+**`handle_id` is not the sender — the review caught it.** Both grouped
+queries in `person.mjs` joined `handle` on `message.handle_id` without
+`is_from_me = 0`, and on the real library **142,838 outgoing 1:1 messages
+carry the counterpart's handle_id**. Every 1:1 share read 100%, the person
+header disagreed with its own thread column, and the brief told the model
+"32935 of 32936". The fixture had masked it by giving outgoing rows a null
+`handle_id`; it now gives 1:1 sends the counterpart's handle, as the real
+schema does, so the existing counts catch a query that forgets. CLAUDE.md's
+trap line said outgoing rows have no `handle_id`; that is true only in groups.
+
+**Which threads.** `personThreads()` finds every chat with a message *from*
+them — not `chat_handle_join`, which drops anyone who left a group while their
+messages remain — folds by strict siblings when `combineThreads` is on, and by
+`merges.local.json` either way (a same-name thread the user merged must not
+show twice with its stats split; dismissed ids are never pulled in). The
+**floor** is 10 messages from them per thread: below it a thread is counted in
+`others`, not loaded, so one stray message in a 60k-message group costs nothing.
+`MESSAGESTATS_PERSON_FLOOR` lowers it for tests only.
+
+**Caching.** `personCorpusCached()` keys on (handle, combine, sha1 of the
+merges file), in its own two-entry LRU cleared by `invalidate()`; `saveMerge()`
+now calls `invalidate()`. Not the general cache: a corpus is every message
+object in every thread someone is in, 125–150 MB of heap for a busy person,
+and ten clicks would have held a gigabyte. Misses are never cached — any page
+can GET `?handle=anything`.
+First call on a real 26-thread person: ~2.5 s; cached: ~0.5 s, which is the
+`personStats` pass over the corpus that `/api/person` re-runs each time.
+
+**Tests exist now.** `node --test 'test/*.test.mjs'` (the bare directory form
+is not a glob in Node 26). `test/fixture.mjs` builds a synthetic `chat.db`
+with the real column names and nanosecond dates bound as `BigInt`;
+`sample()` is the scenario every assertion counts against — change a message
+there and expect to retally. `test/server.test.mjs` spawns the real server on
+a throwaway `MESSAGESTATS_DATA` against `test/llm-stub.mjs`, an OpenAI-wire
+fake that echoes the prompt and remembers the last request, so the briefs are
+asserted on without a real provider. The stub runs standalone too
+(`node test/llm-stub.mjs 4310 4000` — port, delay) for testing the UI's
+pending-ask behaviour by hand.
+
 ### WKWebView cannot download anything — the Export button did nothing
 
 A Blob plus `<a download>` is the standard way to save a file from a page. It
