@@ -1,0 +1,156 @@
+{
+  "perPerson": [
+    {
+      "who": "Ann",
+      "n": 5,
+      "byYear": {
+        "2022": 1,
+        "2023": 3,
+        "2024": 1
+      },
+      "peakHour": 10,
+      "night": 0,
+      "hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "avgLen": 24.4,
+      "medianLen": 14,
+      "maxLen": 71,
+      "starts": 3,
+      "lastWord": 2,
+      "medianReply": 60000,
+      "doubles": 3,
+      "laughs": 0,
+      "questions": 1,
+      "vocab": 20,
+      "topWords": [
+        {
+          "word": "old",
+          "n": 1
+        },
+        {
+          "word": "sms",
+          "n": 1
+        },
+        {
+          "word": "thread",
+          "n": 1
+        },
+        {
+          "word": "hey",
+          "n": 1
+        },
+        {
+          "word": "around",
+          "n": 1
+        },
+        {
+          "word": "cool",
+          "n": 1
+        },
+        {
+          "word": "coming",
+          "n": 1
+        },
+        {
+          "word": "longest",
+          "n": 1
+        },
+        {
+          "word": "message",
+          "n": 1
+        },
+        {
+          "word": "ann",
+          "n": 1
+        }
+      ],
+      "topEmoji": []
+    },
+    {
+      "who": "Me",
+      "n": 2,
+      "byYear": {
+        "2022": 0,
+        "2023": 1,
+        "2024": 1
+      },
+      "peakHour": 10,
+      "night": 0,
+      "hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "avgLen": 5.5,
+      "medianLen": 5.5,
+      "maxLen": 7,
+      "starts": 0,
+      "lastWord": 1,
+      "medianReply": 930000,
+      "doubles": 0,
+      "laughs": 2,
+      "questions": 0,
+      "vocab": 3,
+      "topWords": [
+        {
+          "word": "lol",
+          "n": 1
+        },
+        {
+          "word": "haha",
+          "n": 1
+        }
+      ],
+      "topEmoji": []
+    }
+  ],
+  "signature": {
+    "minUses": 5,
+    "people": []
+  }
+}

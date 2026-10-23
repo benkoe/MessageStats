@@ -1,0 +1,187 @@
+{
+  "perPerson": [
+    {
+      "who": "Ann",
+      "n": 5,
+      "byYear": {
+        "2023": 5,
+        "2024": 0
+      },
+      "peakHour": 12,
+      "night": 0,
+      "hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        0,
+        2,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "avgLen": 6.6,
+      "medianLen": 7,
+      "maxLen": 12,
+      "starts": 3,
+      "lastWord": 3,
+      "medianReply": 60000,
+      "doubles": 3,
+      "laughs": 0,
+      "questions": 1,
+      "vocab": 4,
+      "topWords": [
+        {
+          "word": "obviously",
+          "n": 1
+        },
+        {
+          "word": "coming",
+          "n": 1
+        },
+        {
+          "word": "anyone",
+          "n": 1
+        }
+      ],
+      "topEmoji": []
+    },
+    {
+      "who": "Bob",
+      "n": 2,
+      "byYear": {
+        "2023": 2,
+        "2024": 0
+      },
+      "peakHour": 12,
+      "night": 0,
+      "hours": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "avgLen": 6,
+      "medianLen": 6,
+      "maxLen": 8,
+      "starts": 1,
+      "lastWord": 1,
+      "medianReply": 60000,
+      "doubles": 0,
+      "laughs": 1,
+      "questions": 0,
+      "vocab": 2,
+      "topWords": [
+        {
+          "word": "who's",
+          "n": 1
+        },
+        {
+          "word": "lmao",
+          "n": 1
+        }
+      ],
+      "topEmoji": []
+    },
+    {
+      "who": "Me",
+      "n": 1,
+      "byYear": {
+        "2023": 0,
+        "2024": 1
+      },
+      "peakHour": 0,
+      "night": 1,
+      "hours": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "avgLen": 14,
+      "medianLen": 14,
+      "maxLen": 14,
+      "starts": 1,
+      "lastWord": 1,
+      "medianReply": null,
+      "doubles": 0,
+      "laughs": 0,
+      "questions": 0,
+      "vocab": 3,
+      "topWords": [
+        {
+          "word": "happy",
+          "n": 1
+        },
+        {
+          "word": "new",
+          "n": 1
+        },
+        {
+          "word": "year",
+          "n": 1
+        }
+      ],
+      "topEmoji": []
+    }
+  ],
+  "signature": {
+    "minUses": 5,
+    "people": []
+  }
+}

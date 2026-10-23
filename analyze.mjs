@@ -100,6 +100,7 @@ const LAUGH = /(\blol\b|\blmao\b|\blmfao\b|\bhaha+\b|\bhehe+\b|\bheh\b|😂|🤣
 const inc = (map, key, by = 1) => map.set(key, (map.get(key) ?? 0) + by);
 const topN = (map, n) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
 const obj = (map) => Object.fromEntries(map);
+const pick = (o, ...keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 
 /**
  * Columns come and go between macOS releases — date_edited and date_retracted
@@ -656,14 +657,14 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   // can exceed 100%.
   const spanDays = Math.floor((last.ms - first.ms) / 86_400_000) + 1;
 
-  /* ---- per person, per year ---- */
-  const per = new Map(), perYear = new Map();
-  for (const m of msgs) {
-    inc(per, m.who);
-    const y = new Date(m.ms).getFullYear();
-    if (!perYear.has(m.who)) perYear.set(m.who, new Map());
-    inc(perYear.get(m.who), y);
-  }
+  /* ---- per person ---- */
+  // One pass, shared with the person view: every per-person number that can
+  // be known from the messages alone comes from personStats(), so a report
+  // and a person page agree about the same thread because they ran the same
+  // code. Only what needs the database (tapbacks, attachments, edits) is
+  // computed below.
+  const PS = personStats(msgs, { gap, top });
+  const per = new Map([...PS.rows].map(([who, r]) => [who, r.n]));
   const years = [...new Set(msgs.map((m) => new Date(m.ms).getFullYear()))].sort();
   const ranked = topN(per, 99);
 
@@ -671,7 +672,6 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   const byDay = new Map(), byWeek = new Map(), byMonth = new Map();
   const byHourStamp = new Map(), byDow = new Map();
   const hourTotals = new Array(24).fill(0);
-  const hourByPerson = new Map();
   for (const m of msgs) {
     const d = new Date(m.ms);
     inc(byDay, day(m.ms));
@@ -683,8 +683,6 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     inc(byHourStamp, `${day(m.ms)} ${String(d.getHours()).padStart(2, "0")}:00`);
     inc(byDow, d.getDay());
     hourTotals[d.getHours()] += 1;
-    if (!hourByPerson.has(m.who)) hourByPerson.set(m.who, new Array(24).fill(0));
-    hourByPerson.get(m.who)[d.getHours()] += 1;
   }
 
   const days = [...byDay.keys()].sort();
@@ -705,33 +703,26 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   const one = (map) => { const t = topN(map, 1)[0]; return t ? { key: t[0], n: t[1] } : null; };
 
   /* ---- length ---- */
-  const lens = new Map();
-  for (const m of msgs) {
-    if (!lens.has(m.who)) lens.set(m.who, []);
-    lens.get(m.who).push(m.len);
-  }
   let longest = msgs[0];
   for (const m of msgs) if (m.len > longest.len) longest = m;
 
   /* ---- dynamics ---- */
-  const starters = new Map(), enders = new Map(), doubles = new Map();
-  const replies = new Map(), replyTo = new Map();
+  // Starts, last words, double-texts and per-person reply times live in
+  // personStats(); this loop keeps what is about the pair or the room —
+  // who answers whom, the fastest reply, the longest monologue.
+  const replyTo = new Map();
   let fastest = null;
   let run = { who: msgs[0].who, n: 1, at: msgs[0].ms };
   let bestRun = { ...run };
   for (let i = 0; i < msgs.length; i += 1) {
-    const m = msgs[i], prev = msgs[i - 1], next = msgs[i + 1];
-    if (i === 0 || m.ms - prev.ms >= gap) inc(starters, m.who);
-    if (!next || next.ms - m.ms >= gap) inc(enders, m.who);
+    const m = msgs[i], prev = msgs[i - 1];
     if (i > 0) {
-      if (prev.who === m.who) { inc(doubles, m.who); run.n += 1; }
+      if (prev.who === m.who) run.n += 1;
       else {
         if (run.n > bestRun.n) bestRun = { ...run };
         run = { who: m.who, n: 1, at: m.ms };
         if (m.ms - prev.ms < gap) {
           const dt = m.ms - prev.ms;
-          if (!replies.has(m.who)) replies.set(m.who, []);
-          replies.get(m.who).push(dt);
           const key = `${m.who}>${prev.who}`;
           if (!replyTo.has(key)) replyTo.set(key, []);
           replyTo.get(key).push(dt);
@@ -1240,57 +1231,14 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   }
 
   /* ---- words + emoji ---- */
-  const wordsBy = new Map(), totalWordsBy = new Map(), firstUse = new Map();
-  const emojiBy = new Map(), emojiAll = new Map();
-  // vocab is filled here rather than in the odds-and-ends pass below: words()
-  // is the most expensive per-message call in the file (~190ms per 150k
-  // messages), and running it twice over every message doubled that for
-  // nothing. vocab deliberately includes stop words — it measures distinct
-  // words used, not distinctive ones.
-  const vocab = new Map();
-  for (const m of msgs) {
-    if (!wordsBy.has(m.who)) {
-      wordsBy.set(m.who, new Map()); emojiBy.set(m.who, new Map());
-      totalWordsBy.set(m.who, 0); firstUse.set(m.who, new Map());
-      vocab.set(m.who, new Set());
-    }
-    const vs = vocab.get(m.who);
-    for (const w of words(m.text)) {
-      vs.add(w);
-      if (STOP.has(w)) continue;
-      inc(wordsBy.get(m.who), w);
-      if (!firstUse.get(m.who).has(w)) firstUse.get(m.who).set(w, m.ms);
-      totalWordsBy.set(m.who, totalWordsBy.get(m.who) + 1);
-    }
-    for (const e of m.text.match(EMOJI_RE) ?? []) { inc(emojiBy.get(m.who), e); inc(emojiAll, e); }
-  }
+  // The word pass ran once, inside personStats(); its by-person maps feed
+  // "words they picked up" and the overall emoji table below.
+  const { wordsBy, totalWordsBy, firstUse, emojiAll } = PS;
 
-  /**
-   * SIGNATURE WORDS. Not "what does this person say most" — everyone says the
-   * same top words — but "what do they say far more than everyone else". Rate
-   * within their own output over the same rate across everyone else, with a
-   * floor on raw count so a word used twice can't top the chart.
-   */
-  const minUses = Math.max(5, Math.round(total / 3000));
-  const signature = ranked.map(([who]) => {
-    const mine = wordsBy.get(who), myTotal = totalWordsBy.get(who) || 1;
-    const scored = [];
-    for (const [w, n] of mine) {
-      if (n < minUses) continue;
-      let othersN = 0, othersTotal = 0;
-      for (const [other, map] of wordsBy) {
-        if (other === who) continue;
-        othersN += map.get(w) ?? 0;
-        othersTotal += totalWordsBy.get(other) ?? 0;
-      }
-      const otherRate = othersTotal ? othersN / othersTotal : 0;
-      // otherRate 0 means nobody else has ever used it — more interesting than
-      // any ratio, so it's flagged (null) rather than scored.
-      scored.push({ word: w, n, ratio: otherRate ? (n / myTotal) / otherRate : null });
-    }
-    scored.sort((a, b) => (b.ratio ?? Infinity) - (a.ratio ?? Infinity));
-    return { who, words: scored.slice(0, 8) };
-  }).filter((s) => s.words.length);
+  // Signature words are personStats()'s too — see the note there.
+  const minUses = PS.minUses;
+  const signature = ranked.map(([who]) => ({ who, words: PS.rows.get(who).signature }))
+    .filter((s) => s.words.length);
 
   /**
    * WORDS THEY PICKED UP. A different question from signature words: not what
@@ -1315,15 +1263,9 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
   }).filter((s) => s.words.length);
 
   /* ---- odds and ends ---- */
-  const laughs = new Map(), questions = new Map(), shouts = new Map();
-  // vocab lives in the words pass above — same tokenizer as the word counts,
-  // filled in the one place words() runs.
+  const shouts = new Map();
   const links = new Map(), domains = new Map(), exact = new Map();
   for (const m of msgs) {
-    if (LAUGH.test(m.text)) inc(laughs, m.who);
-    // Anywhere, not just the last character — "wait what? lol" is a question.
-    // URLs stripped first because query strings are full of question marks.
-    if (/\?/.test(m.text.replace(/https?:\/\/[^\s]+/g, ""))) inc(questions, m.who);
     const caps = m.text.match(/\b[A-Z]{3,}\b/g) ?? [];
     if (caps.length) inc(shouts, m.who, caps.length);
     for (const url of m.text.match(/https?:\/\/[^\s]+/g) ?? []) {
@@ -1354,26 +1296,14 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
     years,
     perPerson: ranked.map(([who, n]) => ({
       who, n, share: n / total,
-      byYear: Object.fromEntries(years.map((y) => [y, perYear.get(who)?.get(y) ?? 0])),
-      peakHour: hourByPerson.get(who).indexOf(Math.max(...hourByPerson.get(who))),
-      night: hourByPerson.get(who).slice(0, 5).reduce((a, b) => a + b, 0),
-      hours: hourByPerson.get(who),
-      avgLen: lens.get(who).reduce((a, b) => a + b, 0) / lens.get(who).length,
-      medianLen: median(lens.get(who)),
-      maxLen: Math.max(...lens.get(who)),
-      starts: starters.get(who) ?? 0,
-      lastWord: enders.get(who) ?? 0,
-      medianReply: median(replies.get(who) ?? []),
-      doubles: doubles.get(who) ?? 0,
+      ...pick(PS.rows.get(who), "byYear", "peakHour", "night", "hours", "avgLen", "medianLen", "maxLen",
+        "starts", "lastWord", "medianReply", "doubles", "laughs", "questions", "vocab", "topWords", "topEmoji"),
       given: given.get(who) ?? 0,
       received: received.get(who) ?? 0,
       // Their mix of reaction kinds, for the per-person breakdown.
       gaveKinds: Object.fromEntries(kindsBy.get(who) ?? []),
-      laughs: laughs.get(who) ?? 0,
-      questions: questions.get(who) ?? 0,
       shouts: shouts.get(who) ?? 0,
       links: links.get(who) ?? 0,
-      vocab: vocab.get(who)?.size ?? 0,
       attachments: attBy.get(who) ?? 0,
       attachmentBytes: attBytesBy.get(who) ?? 0,
       attachmentKinds: topN(attKindBy.get(who) ?? new Map(), 6).map(([kind, n]) => ({ kind, n })),
@@ -1382,8 +1312,6 @@ export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 
       screenRecordings: recordingsBy.get(who) ?? 0,
       unsent: unsentBy.get(who) ?? 0,
       edited: editedBy.get(who) ?? 0,
-      topWords: topN(wordsBy.get(who), top).map(([word, n]) => ({ word, n })),
-      topEmoji: topN(emojiBy.get(who), 8).map(([emoji, n]) => ({ emoji, n })),
     })),
     busiest: {
       day: one(byDay), week: one(byWeek), month: one(byMonth), hour: one(byHourStamp),
