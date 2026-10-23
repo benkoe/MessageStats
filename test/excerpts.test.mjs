@@ -58,3 +58,24 @@ test("chat scope takes everyone", () => {
   const ex = excerpts(corpus.filter((m) => m.thread === "Ann"), { budget: 40000 });
   assert.ok(ex.lines.some((l) => l.who === "Me"));
 });
+
+test("a spread reaches every thread even when long messages compete for the budget", () => {
+  const msgs = [];
+  for (let t = 0; t < 10; t += 1) for (let k = 0; k < 5; k += 1)
+    msgs.push({ guid: `t${t}m${k}`, who: "Ann", ms: Date.UTC(2023, 0, 1) + (t * 5 + k) * 60_000,
+      text: "x".repeat(100), len: 100, thread: `T${t}`, isGroup: false });
+  const ex = excerpts(msgs, { who: "Ann", budget: 3000 });
+  assert.equal(new Set(ex.lines.map((l) => l.thread)).size, 10);   // every thread represented
+  assert.ok(ex.counts.spread >= 1);                                  // the spread was not starved
+  assert.ok(ex.used <= 3000);
+});
+
+test("two threads with the same name are still two threads", () => {
+  const t0 = Date.UTC(2023, 0, 1);
+  const msgs = [
+    { guid: "a1", who: "Ann", ms: t0, text: "a joke", len: 6, thread: "Crew", threadId: 2, isGroup: true },
+    { guid: "b1", who: "Bob", ms: t0 + 60_000, text: "lol", len: 3, thread: "Crew", threadId: 4, isGroup: true },
+  ];
+  const ex = excerpts(msgs, { who: "Ann", budget: 1000 });
+  assert.equal(ex.lines.filter((l) => l.why.includes("laughed")).length, 0);   // Bob laughed in a different thread
+});

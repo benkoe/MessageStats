@@ -11,7 +11,7 @@ const ANN = "15550000001", BOB = "15550000002";
 test("corpus spans every thread above the floor", () => {
   const c = personCorpus(db, { handle: ANN, names, canonical, merges: {}, combine: true, floor: 1 });
   assert.equal(c.name, "Ann");
-  assert.deepEqual([...new Set(c.msgs.map((m) => m.thread))].sort(), ["Ann", "Crew"]);
+  assert.deepEqual([...new Set(c.msgs.map((m) => m.thread))].sort(), ["Ann", "Crew (2023)", "Crew (2023–2024)"]);
   assert.equal(c.msgs.filter((m) => m.who === "Ann").length, 11);
   assert.equal(c.reactions.reactors.get("m9").size, 2);
   assert.ok(c.msgs.every((m, i) => i === 0 || m.ms >= c.msgs[i - 1].ms));

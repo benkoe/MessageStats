@@ -40,3 +40,22 @@ test("a handle nobody sent from has no threads", () => {
   const r = personThreads(db, { handle: "19999999999", canonical, names, floor: 1 });
   assert.deepEqual(r.threads, []); assert.equal(r.others, 0); assert.equal(r.name, null);
 });
+
+test("same-named threads are told apart by their span", () => {
+  const r = personThreads(db, { handle: ANN, canonical, names, floor: 1 });
+  assert.deepEqual(r.threads.map((t) => t.name), ["Ann", "Crew (2023–2024)", "Crew (2023)"]);
+});
+
+test("an unnamed group is named by who is in it", () => {
+  const spec = {
+    me: "+15550000000",
+    handles: { 1: "+15550000001", 2: "+15550000002" },
+    names: { "15550000001": "Ann", "15550000002": "Bob" },
+    chats: [{ id: 1, ci: "chat777", style: 43, roster: [1, 2] }],
+    messages: [{ id: 1, chat: 1, from: 1, at: "2023-01-01T10:00", text: "hi" }],
+  };
+  const f = makeDb(spec);
+  const ids = loadIdentities(f.namesPath, f.db);
+  const r = personThreads(f.db, { handle: ANN, canonical: ids.canonical, names: ids.names, floor: 1 });
+  assert.deepEqual(r.threads.map((t) => t.name), ["Ann, Bob"]);
+});

@@ -17,6 +17,7 @@
  */
 
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { copyFile, stat as statAsync } from "node:fs/promises";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, unlinkSync,
@@ -31,7 +32,8 @@ import {
   normalizeHandle, openDb, REAL_MESSAGE_WHERE, resolveDbPath, resolveNamesPath,
   stamp, dataDir, TZ,
 } from "./lib.mjs";
-import { analyze, loadMessages, overview, resolveChats, resolveMe } from "./analyze.mjs";
+import { analyze, excerpts, loadMessages, loadReactions, overview, questionTerms, resolveChats, resolveMe } from "./analyze.mjs";
+import { peopleDirectory, personCorpus, personDetail } from "./person.mjs";
 import { ask as llmAsk, listModels, loadConfig as loadAiConfig, PROVIDERS } from "./llm.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -443,8 +445,22 @@ function around(chatId, { at, merge, mergeIds, span = 40 }) {
 
 /* ---------------- the assistant ---------------- */
 
-const AI_RULES = `You are given computed statistics, not raw message history — so ground every claim in the
-numbers you were given and never invent a quote, a name, or a figure.
+/**
+ * How much real message text an ask may carry, in characters. A line can be a
+ * word or a paragraph, so the budget is characters rather than lines. Not a
+ * setting: the one exception is a local model, whose context window is a few
+ * thousand tokens and which truncates from the *front* of the prompt — where
+ * the grounding rules sit — so it gets a quarter and the UI says so.
+ */
+const EXCERPT_BUDGET = { chat: 20_000, person: 40_000 };
+const LOCAL_BUDGET_SCALE = 0.25;
+const budgetFor = (scope, cfg) => Math.round(EXCERPT_BUDGET[scope] * (cfg.local ? LOCAL_BUDGET_SCALE : 1));
+/** Threads where someone sent fewer messages than this are counted, not read. The env hook is for tests. */
+const PERSON_FLOOR = Number(process.env.MESSAGESTATS_PERSON_FLOOR) || 10;
+
+const AI_RULES = `You are given computed statistics plus a chosen subset of real messages — so ground every
+claim in the numbers and the quoted lines you were given, quote only verbatim, and never invent a
+quote, a name, or a figure.
 
 What good looks like:
 - Lead with the two or three findings that actually land. Don't reformat the table back.
@@ -469,6 +485,11 @@ one of them rather than the first few — a partial list is a wrong answer.`;
  */
 const AI_SCOPES = {
   chat: "You are analysing one iMessage conversation for the person who owns it.",
+  person: `You are analysing one person across every iMessage conversation they share with the owner — their
+one-to-one thread and each group. The context has their per-conversation numbers and a chosen subset of
+their real messages, with the selection rules stated. Quote only text that appears in the context,
+verbatim. Anything not in the context is unknown: say "the excerpts" rather than "their messages" when
+generalising.`,
   library: `You are analysing someone's whole iMessage history — every conversation at once.
 This context is counts and dates only. It contains no message text, no words, no emoji and no
 quotes, because the overview it comes from never reads a single message. So never quote anyone,
@@ -527,8 +548,12 @@ const TONES = {
   },
 };
 
-/** A compact, quote-light brief. Aggregates first; raw text only where it carries the point. */
-function brief(A, { search } = {}) {
+/**
+ * The chat brief: aggregates first, the handful of quotes the stats point at,
+ * then — since the excerpt layer — a rule-chosen selection of real messages
+ * from the conversation, with the rules stated. See renderExcerpts().
+ */
+function brief(A, { search, excerpts: ex } = {}) {
   const L = [];
   const pc = (a, b) => (b ? `${((a / b) * 100).toFixed(1)}%` : "—");
   const d = day;                       // local, like every other bucket
@@ -619,6 +644,84 @@ function brief(A, { search } = {}) {
     L.push(`  sample matches:`);
     for (const h of search.hits.slice(0, 25)) L.push(`    ${d(h.ms)} ${h.who}: ${h.text.slice(0, 160)}`);
   }
+  if (ex) L.push("", renderExcerpts(ex, { subject: null }));
+  return L.join("\n");
+}
+
+const EXCERPT_HEADINGS = {
+  reacted: "REACTED TO BY THE ROOM (groups only; most reactors first)",
+  laughed: "SOMEBODY ELSE LAUGHED WITHIN FIVE MINUTES",
+  longest: "LONGEST, PER THREAD",
+  repeated: "SAID AGAIN AND AGAIN (count first)",
+  unanswered: "WENT UNANSWERED IN A GROUP (their own next message, an hour or more later)",
+  spread: "A SPREAD ACROSS EVERY THREAD AND YEAR (every k-th message, deterministic)",
+};
+const RULE_LABELS = { reacted: "reacted to", laughed: "laughed at", longest: "longest", repeated: "repeated",
+  unanswered: "unanswered", spread: "spread", search: "matched the question" };
+
+/**
+ * The excerpt section of a brief. It opens by saying what it is and how it
+ * was chosen, because a model reading real quotes will otherwise treat them
+ * as the whole record. Lines are grouped under the rule that picked them, in
+ * priority order; a line two rules picked sits under the first. Search hits
+ * are printed again under their term even when a rule above already has
+ * them, so the answer to a pointed question is in one place.
+ */
+function renderExcerpts(ex, { subject }) {
+  const one = (t) => t.replace(/\s*\n\s*/g, " ⏎ ");
+  const line = (l) => `  ${day(l.ms)} · ${l.thread} · ${l.who}: ${one(l.text)}`;
+  const L = [];
+  const rules = Object.entries(ex.counts).filter(([, n]) => n).map(([r, n]) => `${RULE_LABELS[r] ?? r} ${n}`).join(", ");
+  L.push(`EXCERPTS — ${ex.lines.length} real messages ${subject ? `by ${subject}` : "from this conversation"}, chosen by rule, not a sample of everything: ${rules || "none"}.` +
+    ` Dates local (${TZ}). This is a subset; anything not quoted here is unknown to you.`);
+  for (const rule of Object.keys(EXCERPT_HEADINGS)) {
+    const mine = ex.lines.filter((l) => l.why.find((w) => w !== "search") === rule);
+    if (!mine.length) continue;
+    L.push(`${EXCERPT_HEADINGS[rule]}:`);
+    for (const l of mine) {
+      L.push(line(l));
+      if (l.before) L.push(`    ↳ before, ${l.before.who}: ${one(l.before.text)}`);
+      if (l.after) L.push(`    ↳ after, ${l.after.who}: ${one(l.after.text)}`);
+    }
+  }
+  const terms = [...new Set(ex.lines.filter((l) => l.term).map((l) => l.term))];
+  for (const t of terms) {
+    L.push(`SEARCH "${t}":`);
+    for (const l of ex.lines.filter((l) => l.term === t)) L.push(line(l));
+  }
+  return L.join("\n");
+}
+
+/**
+ * The person brief: who they are, their row in every thread they are in,
+ * then the excerpts. Compact numbers, because the point of this scope is the
+ * words — the numbers are setup lines.
+ */
+function personBrief(D, ex) {
+  const d = day;
+  const pc = (a, b) => (b ? `${((a / b) * 100).toFixed(1)}%` : "—");
+  const P = D.person;
+  const L = [];
+  L.push(`PERSON: ${P.name} — ${P.total} messages across ${P.threadCount} conversations, ${d(P.first)} → ${d(P.last)}`);
+  if (P.aka.length) L.push(`  Also known as: ${P.aka.join(", ")}`);
+  if (P.others) L.push(`  Also appears in ${P.others} other conversation(s) with fewer than ${PERSON_FLOOR} messages from them — not read.`);
+  L.push(`All dates and clock times are ${P.tz}. iMessage stores the instant and no timezone, so messages sent while travelling read as this one.`);
+  L.push(`\nPER THREAD (their messages, share of the thread, then by year; one-to-one first):`);
+  for (const t of D.threads) {
+    const r = t.row;
+    let s = `  ${t.name}${t.isGroup ? " (group)" : ""}: ${t.n} of ${t.total} (${pc(t.n, t.total)}) · ${d(t.first)} → ${d(t.last)}`;
+    if (r) {
+      s += ` · by year ${Object.entries(r.byYear).map(([y, n]) => `${y}:${n}`).join(" ")}` +
+        ` · avg ${r.avgLen.toFixed(1)} chars · peak ${String(r.peakHour).padStart(2, "0")}:00` +
+        ` · starts ${r.starts} · last-word ${r.lastWord} · median reply ${Math.round(r.medianReply / 1000)}s` +
+        ` · double-texts ${pc(r.doubles, r.n)} · laughs ${pc(r.laughs, r.n)} · questions ${pc(r.questions, r.n)}`;
+      if (r.signature.length) s += ` · signature: ${r.signature.map((w) => `${w.word} ${w.n}x${w.ratio == null ? " (only them)" : ""}`).join(", ")}`;
+      if (r.topEmoji.length) s += ` · emoji: ${r.topEmoji.map((e) => `${e.emoji} ${e.n}`).join(" ")}`;
+    }
+    L.push(s);
+  }
+  L.push("", renderExcerpts(ex, { subject: P.name }));
+  L.push(`\nWHAT IS NOT HERE: other people's numbers in these threads, the full text of anything, and the ${P.others} conversation(s) where ${P.name} sent fewer than ${PERSON_FLOOR} messages.`);
   return L.join("\n");
 }
 
@@ -761,7 +864,42 @@ function saveMerge({ chatId, merge, ids, dismissed, forget }) {
     at: new Date().toISOString(),
   };
   writeFileSync(MERGES_FILE, `${JSON.stringify(all, null, 2)}\n`);
+  // A merge decision changes which rows a person's threads fold into.
+  invalidate();
   return { ok: true, merges: all };
+}
+
+/** What the merge decisions currently say, as a cache-key ingredient. */
+function mergesDigest() {
+  try { return createHash("sha1").update(readFileSync(MERGES_FILE)).digest("hex").slice(0, 12); } catch { return ""; }
+}
+
+/**
+ * A person's loaded threads, cached: thirty loadMessages() calls is seconds,
+ * and the person page and every ask about them read the same corpus. Keyed
+ * by the folding preference and the merge decisions because both change
+ * which rows make up a thread. invalidate() clears it with everything else.
+ */
+function personCorpusCached(handle, combine) {
+  const d = getDb();
+  if (!d) return null;
+  const key = `person|${handle}|${combine}|${mergesDigest()}`;
+  if (cache.has(key)) return cache.get(key);
+  const { names, canonical } = identities();
+  const corpus = personCorpus(d, { handle, names, canonical, merges: readMerges(), combine, floor: PERSON_FLOOR });
+  cache.set(key, corpus);
+  return corpus;
+}
+
+/** Everyone who has sent a message, cached — one grouped query, no text. */
+function peopleCached() {
+  const d = getDb();
+  if (!d) return null;
+  if (!cache.has("people")) {
+    const { names, canonical } = identities();
+    cache.set("people", peopleDirectory(d, { names, canonical }));
+  }
+  return cache.get("people");
 }
 
 /**
@@ -790,14 +928,16 @@ function addHistory(entry) {
   } catch { /* history must never break an answer */ }
 }
 
-async function aiAsk({ scope, chatId, merge, mergeIds, combine, question, searchFor, tone }) {
+async function aiAsk({ scope, chatId, handle, merge, mergeIds, combine, question, searchFor, tone }) {
   const cfg = loadAiConfig(DATA);
   if (cfg.error) throw new Error(cfg.error);
   if (!cfg.configured) throw new Error("The assistant is not configured. Create ai.local.json.");
-  // Two scopes, one asker. The library one reuses the cached overview rather
+  // Three scopes, one asker. The library one reuses the cached overview rather
   // than building anything of its own, so asking costs nothing the page you
-  // are looking at has not already paid for.
-  let context, subject, key;
+  // are looking at has not already paid for. The other two read real messages
+  // — a rule-chosen subset, see excerpts() — and say how much they sent.
+  const terms = [...questionTerms(question), ...(searchFor ? [searchFor] : [])];
+  let context, subject, key, excerptChars = 0;
   if (scope === "library") {
     // The caller's own preference, so the assistant reads the page the person
     // is looking at rather than a differently-folded one.
@@ -808,18 +948,42 @@ async function aiAsk({ scope, chatId, merge, mergeIds, combine, question, search
     // A string, not a number: it shares the history file with chat asks and
     // has to be a key no chat ROWID can collide with.
     key = "library";
+  } else if (scope === "person") {
+    const corpus = personCorpusCached(handle, combine);
+    if (!corpus) throw new Error("no database yet");
+    if (!corpus.name) throw new Error(`no messages from ${handle}`);
+    const D = personDetail(corpus, { top: 8 });
+    if (!D.threads.length) throw new Error(`${corpus.name} has fewer than ${PERSON_FLOOR} messages in every conversation — nothing to read.`);
+    const ex = excerpts(corpus.msgs, { who: corpus.name, reactions: corpus.reactions, budget: budgetFor("person", cfg), terms });
+    context = personBrief(D, ex);
+    subject = corpus.name;
+    // By name, not handle: adding an alias later changes the handle and would
+    // orphan every saved answer; the name survives it.
+    key = `person:${corpus.name}`;
+    excerptChars = ex.used + ex.searchUsed;
   } else {
     const A = chatDetail(chatId, { merge, mergeIds, top: 12 });
     if (!A || A.error) throw new Error(A?.error ?? `no chat ${chatId}`);
     // Only run a search when the caller asks for one — it re-reads every message.
     const s = searchFor ? { q: searchFor, ...search(chatId, { q: searchFor, merge, mergeIds, limit: 25 }) } : null;
-    context = brief(A, { search: s });
+    // The excerpt layer re-reads the thread, like search() does; chatDetail()
+    // keeps the analysis, not the messages.
+    const d = getDb();
+    const { names, canonical } = identities();
+    const resolved = resolveChats(d, { chatId, merge, mergeIds, canonical });
+    const meName = resolveMe(d, resolved.ids, { names, canonical });
+    const { msgs, byGuid, label } = loadMessages(d, resolved.ids, { names, canonical, meName });
+    for (const m of msgs) { m.thread = A.chat.name; m.isGroup = A.chat.isGroup; }
+    const reactions = loadReactions(d, resolved.ids, { byGuid, label });
+    const ex = excerpts(msgs, { reactions, budget: budgetFor("chat", cfg), terms });
+    context = brief(A, { search: s, excerpts: ex });
     subject = A.chat.name;
     key = chatId;
+    excerptChars = ex.used + ex.searchUsed;
   }
   const preset = TONES[tone] ?? TONES.funny;
   const { text, truncated } = await llmAsk(cfg, {
-    system: systemFor(scope === "library" ? "library" : "chat", preset),
+    system: systemFor(AI_SCOPES[scope] ? scope : "chat", preset),
     user: `${context}\n\n---\nQUESTION: ${question}`,
     // A question like "assign everyone a character" wants a paragraph per
     // person, and a big group ran past 4096 and stopped mid-word. The ceiling
@@ -834,6 +998,7 @@ async function aiAsk({ scope, chatId, merge, mergeIds, combine, question, search
     answer: text, truncated, tone, toneLabel: preset.label,
     provider: cfg.label, model: cfg.model, local: cfg.local,
     contextChars: context.length,
+    excerptChars,
   };
   addHistory(out);
   return out;
@@ -1077,8 +1242,9 @@ const server = createServer((req, res) => {
 
     if (p === "/api/ai/ask" && req.method === "POST") {
       return withBody((q) => aiAsk({
-        scope: q.scope === "library" ? "library" : "chat",
-        chatId: Number(q.chatId), merge: Boolean(q.merge), mergeIds: q.ids ?? [],
+        scope: ["library", "person"].includes(q.scope) ? q.scope : "chat",
+        chatId: Number(q.chatId), handle: String(q.handle ?? ""),
+        merge: Boolean(q.merge), mergeIds: q.ids ?? [],
         combine: q.combine !== false,
         question: String(q.question ?? "").slice(0, 4000), searchFor: q.search || null,
         tone: q.tone || null,
@@ -1090,6 +1256,16 @@ const server = createServer((req, res) => {
     if (p === "/api/import" && req.method === "POST") {
       return importSnapshot().then((r) => send(res, r.ok ? 200 : 400, r))
         .catch((e) => send(res, 500, { ok: false, error: e.message }));
+    }
+    if (p === "/api/people") {
+      const list = peopleCached();
+      return list ? send(res, 200, list) : send(res, 404, { error: "no database yet" });
+    }
+    if (p === "/api/person") {
+      const corpus = personCorpusCached(String(qs.get("handle") ?? ""), qs.get("combine") !== "0");
+      if (!corpus) return send(res, 404, { error: "no database yet" });
+      if (!corpus.name) return send(res, 404, { error: "no messages from that handle" });
+      return send(res, 200, personDetail(corpus, { top: 8 }));
     }
     if (p === "/api/overview") {
       const O = overviewData({ combine: qs.get("combine") !== "0" });

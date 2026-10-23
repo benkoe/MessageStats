@@ -419,7 +419,8 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12, com
 
   const people = [...byPerson.values()].sort((a, b) => b.n - a.n);
   const shape = (p) => ({
-    name: p.name, n: p.n, sent: p.sent, received: p.received,
+    // The canonical handle is what the person view is keyed by.
+    name: p.name, handle: p.handle, n: p.n, sent: p.sent, received: p.received,
     first: p.first, last: p.last,
     // Biggest thread first, so a caller opening chats[0] lands on the main one
     // rather than whichever fork happened to be iterated first.
@@ -725,6 +726,12 @@ export function questionTerms(question) {
 const ATTACHMENT_ONLY = /^[￼\s]*$/;
 const EXCERPT_LINE_MAX = 400;
 const EXCERPT_CAPS = { reacted: 60, laughed: 60, longest: 4, repeated: 10, unanswered: 10, search: 40 };
+/**
+ * The share of the budget the targeted rules (1–5) may use between them, so
+ * the spread always has the rest. On a real 26-thread person, longest-per-
+ * thread alone took 25k of a 40k budget and ten threads got no line at all.
+ */
+const SPREAD_RESERVE = 0.4;
 
 /**
  * Real messages for the assistant to read — chosen by rule, never a dump.
@@ -753,11 +760,14 @@ export function excerpts(msgs, {
   const cap = { ...EXCERPT_CAPS, ...caps };
   const cut = (t) => (t.length > EXCERPT_LINE_MAX ? `${t.slice(0, EXCERPT_LINE_MAX)}…` : t);
   const threadOf = (m) => m.thread ?? "";
+  // Identity, not name: two groups can share a display name, and neighbours
+  // and strata must never cross between them.
+  const threadKey = (m) => m.threadId ?? threadOf(m);
 
   // Neighbours within the same thread, by index into msgs.
   const prevIn = new Map(), nextIn = new Map(), lastSeen = new Map();
   msgs.forEach((m, i) => {
-    const t = threadOf(m), p = lastSeen.get(t);
+    const t = threadKey(m), p = lastSeen.get(t);
     if (p != null) { prevIn.set(i, p); nextIn.set(p, i); }
     lastSeen.set(t, i);
   });
@@ -768,6 +778,8 @@ export function excerpts(msgs, {
   const picked = new Map();   // guid -> line
   const counts = {};
   let used = 0, searchUsed = 0;
+  // Rules 1–5 stop at the ceiling; the spread may use the whole budget.
+  let ceiling = Math.floor(budget * (1 - SPREAD_RESERVE));
   const ref = (m) => ({ who: m.who, ms: m.ms, text: cut(m.text) });
   const tally = (rule) => { counts[rule] = (counts[rule] ?? 0) + 1; };
   /** Add msgs[i] under `rule`; false when the budget is spent. */
@@ -780,7 +792,7 @@ export function excerpts(msgs, {
       // repeat; the count is the point, so it goes on either way.
       if (text) {
         const nt = cut(text);
-        if (used + nt.length - have.text.length <= budget) { used += nt.length - have.text.length; have.text = nt; }
+        if (used + nt.length - have.text.length <= ceiling) { used += nt.length - have.text.length; have.text = nt; }
       }
       return true;
     }
@@ -791,7 +803,7 @@ export function excerpts(msgs, {
       if (n != null) line.after = ref(msgs[n]);
     }
     const cost = line.text.length + (line.before?.text.length ?? 0) + (line.after?.text.length ?? 0);
-    if (used + cost > budget) return false;
+    if (used + cost > ceiling) return false;
     used += cost;
     picked.set(m.guid, line);
     tally(rule);
@@ -823,17 +835,17 @@ export function excerpts(msgs, {
   });
   for (const i of spaced(laughed, cap.laughed)) if (!add(i, "laughed", { context: true })) break;
 
-  // 3. Longest, per thread.
+  // 3. Longest, per thread — every thread's longest before any thread's
+  // second-longest, so a tight budget still reaches each thread once.
   const byThread = new Map();
   for (const i of cands) {
-    const t = threadOf(msgs[i]);
+    const t = threadKey(msgs[i]);
     if (!byThread.has(t)) byThread.set(t, []);
     byThread.get(t).push(i);
   }
-  for (const idxs of byThread.values()) {
-    const top = [...idxs].sort((a, b) => msgs[b].len - msgs[a].len).slice(0, cap.longest);
-    for (const i of top) if (!add(i, "longest")) break;
-  }
+  const longestLists = [...byThread.values()].map((idxs) => [...idxs].sort((a, b) => msgs[b].len - msgs[a].len).slice(0, cap.longest));
+  for (let rank = 0; rank < cap.longest; rank += 1)
+    for (const list of longestLists) if (rank < list.length && !add(list[rank], "longest")) break;
 
   // 4. Repeated — the same exact text, again and again.
   const exact = new Map();   // normalised text -> [first index, count]
@@ -859,24 +871,27 @@ export function excerpts(msgs, {
   const strata = new Map();
   for (const i of cands) {
     if (picked.has(msgs[i].guid)) continue;
-    const key = `${threadOf(msgs[i])}|${new Date(msgs[i].ms).getFullYear()}`;
+    const key = `${threadKey(msgs[i])}|${new Date(msgs[i].ms).getFullYear()}`;
     if (!strata.has(key)) strata.set(key, []);
     strata.get(key).push(i);
   }
+  ceiling = budget;
   if (strata.size && used < budget) {
     const rest = [...strata.values()].flat();
     const avg = Math.max(1, rest.reduce((s, i) => s + Math.min(msgs[i].len, EXCERPT_LINE_MAX + 1), 0) / rest.length);
     const perStratum = Math.max(1, Math.floor((budget - used) / avg / strata.size));
     const queues = [...strata.values()].map((idxs) => spaced(idxs, perStratum));
-    let spent = false;
-    for (let k = 0; !spent; k += 1) {
-      let any = false;
+    // Round-robin so every stratum gets its first line before any gets a
+    // second; a line that doesn't fit is skipped, not fatal — a shorter one
+    // from the next stratum still might.
+    for (let k = 0, any = true; any; k += 1) {
+      any = false;
       for (const q of queues) {
         if (k >= q.length) continue;
         any = true;
-        if (!add(q[k], "spread")) { spent = true; break; }
+        add(q[k], "spread");
       }
-      if (!any) break;
+      if (used >= budget) break;
     }
   }
 

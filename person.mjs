@@ -14,7 +14,7 @@
  * Settings warns about, and this inherits it rather than fixing it.
  */
 import {
-  appleMicrosToMs, chatSummaries, DATE_TO_MICROS, findSiblingChats, isShortcode,
+  appleMicrosToMs, chatRosters, chatSummaries, DATE_TO_MICROS, findSiblingChats, isShortcode,
   normalizeHandle, REAL_MESSAGE_WHERE, TZ,
 } from "./lib.mjs";
 import { loadMessages, loadReactions, personStats, resolveMe } from "./analyze.mjs";
@@ -149,6 +149,10 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
   const meta = new Map(db.prepare(
     `select ROWID id, display_name dn, chat_identifier ci, style from chat where ROWID in (${holes})`
   ).all(...all).map((c) => [c.id, c]));
+  // Unnamed groups are named by who is in them, as the overview names them.
+  const rosters = chatRosters(db, canonical);
+  const rosterName = (ids) => [...new Set(ids.flatMap((id) => [...(rosters.get(id) ?? [])]))]
+    .map((h) => names.get(h) ?? h).sort().join(", ");
 
   const threads = relevant.map((set) => {
     const ids = [...set].filter((id) => meta.has(id)).sort((a, b) => a - b);
@@ -156,18 +160,34 @@ export function personThreads(db, { handle, canonical, names, merges = {}, combi
     for (const id of ids) if ((totals.get(id)?.n ?? 0) > (totals.get(anchor)?.n ?? 0)) anchor = id;
     const c = meta.get(anchor);
     const isGroup = c.style === 43;
+    const firsts = ids.map((id) => totals.get(id)?.first_us).filter(Boolean);
+    const lasts = ids.map((id) => totals.get(id)?.last_us).filter(Boolean);
     return {
       id: anchor, ids: [anchor, ...ids.filter((id) => id !== anchor)], isGroup,
-      name: c.dn?.trim() || (isGroup ? "(unnamed group)" : name),
+      name: c.dn?.trim() || (isGroup ? rosterName(ids) || "(unnamed group)" : name),
       n: ids.reduce((s, id) => s + (mine.get(id) ?? 0), 0),
+      first: firsts.length ? appleMicrosToMs(Math.min(...firsts)) : null,
+      last: lasts.length ? appleMicrosToMs(Math.max(...lasts)) : null,
     };
   }).sort((a, b) => Number(a.isGroup) - Number(b.isGroup) || b.n - a.n || a.id - b.id);
 
-  return {
-    threads: threads.filter((t) => t.n >= floor),
-    others: threads.filter((t) => t.n < floor).length,
-    name, aka: [...aka],
-  };
+  const kept = threads.filter((t) => t.n >= floor);
+  // Two threads under one name — a renamed group the user chose not to
+  // merge, or two unrelated groups both called "Family" — must be told apart
+  // on the page and in the brief. The span usually does it; the id always does.
+  const byName = new Map();
+  for (const t of kept) byName.set(t.name, (byName.get(t.name) ?? 0) + 1);
+  const year = (ms) => (ms ? new Date(ms).getFullYear() : null);
+  for (const t of kept) {
+    if (byName.get(t.name) < 2) continue;
+    const y0 = year(t.first), y1 = year(t.last);
+    t.name = `${t.name} (${y0 === y1 ? y0 : `${y0}–${y1}`})`;
+  }
+  const again = new Map();
+  for (const t of kept) again.set(t.name, (again.get(t.name) ?? 0) + 1);
+  for (const t of kept) if (again.get(t.name) > 1) t.name = `${t.name} #${t.id}`;
+
+  return { threads: kept, others: threads.length - kept.length, name, aka: [...aka] };
 }
 
 /**
