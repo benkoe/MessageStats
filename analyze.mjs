@@ -528,6 +528,125 @@ export function overview(db, { names, canonical, now = Date.now(), top = 12, com
  * `msgs` must already be deduped and sorted (see loadMessages). `gap` is the
  * silence that ends a conversation, for start/last-word/reply accounting.
  */
+/**
+ * Everything about one person that can be known from the messages alone —
+ * no database, no tapbacks, no attachments. One row per sender.
+ *
+ * This is the single place per-person numbers come from: analyze() reads
+ * its perPerson fields from here, and the person view reads the same rows
+ * for each thread someone is in, so a report and a person page print the
+ * same number for the same conversation because they ran the same code.
+ *
+ * The word pass is the most expensive call in the file, so its by-person
+ * maps are returned too — analyze() needs them for "words they picked up"
+ * and the overall emoji table, and must not run words() a second time.
+ */
+export function personStats(msgs, { gap = 6 * 3600_000, top = 10, minUses } = {}) {
+  const per = new Map(), perYear = new Map(), hourBy = new Map(), lens = new Map();
+  const starters = new Map(), enders = new Map(), doubles = new Map(), replies = new Map();
+  const laughs = new Map(), questions = new Map();
+  const wordsBy = new Map(), totalWordsBy = new Map(), firstUse = new Map();
+  const emojiBy = new Map(), emojiAll = new Map(), vocab = new Map();
+  const seen = (who) => {
+    if (per.has(who)) return;
+    per.set(who, 0); perYear.set(who, new Map()); hourBy.set(who, new Array(24).fill(0));
+    lens.set(who, []); wordsBy.set(who, new Map()); emojiBy.set(who, new Map());
+    totalWordsBy.set(who, 0); firstUse.set(who, new Map()); vocab.set(who, new Set());
+  };
+
+  for (let i = 0; i < msgs.length; i += 1) {
+    const m = msgs[i], prev = msgs[i - 1], next = msgs[i + 1];
+    seen(m.who);
+    inc(per, m.who);
+    const d = new Date(m.ms);
+    inc(perYear.get(m.who), d.getFullYear());
+    hourBy.get(m.who)[d.getHours()] += 1;
+    lens.get(m.who).push(m.len);
+
+    // Adjacency, the same rules analyze() has always used.
+    if (i === 0 || m.ms - prev.ms >= gap) inc(starters, m.who);
+    if (!next || next.ms - m.ms >= gap) inc(enders, m.who);
+    if (i > 0) {
+      if (prev.who === m.who) inc(doubles, m.who);
+      else if (m.ms - prev.ms < gap) {
+        if (!replies.has(m.who)) replies.set(m.who, []);
+        replies.get(m.who).push(m.ms - prev.ms);
+      }
+    }
+
+    if (LAUGH.test(m.text)) inc(laughs, m.who);
+    // Anywhere, not just the last character — "wait what? lol" is a question.
+    // URLs stripped first because query strings are full of question marks.
+    if (/\?/.test(m.text.replace(/https?:\/\/[^\s]+/g, ""))) inc(questions, m.who);
+
+    // vocab deliberately includes stop words — it measures distinct words
+    // used, not distinctive ones.
+    const vs = vocab.get(m.who);
+    for (const w of words(m.text)) {
+      vs.add(w);
+      if (STOP.has(w)) continue;
+      inc(wordsBy.get(m.who), w);
+      if (!firstUse.get(m.who).has(w)) firstUse.get(m.who).set(w, m.ms);
+      totalWordsBy.set(m.who, totalWordsBy.get(m.who) + 1);
+    }
+    for (const e of m.text.match(EMOJI_RE) ?? []) { inc(emojiBy.get(m.who), e); inc(emojiAll, e); }
+  }
+
+  /**
+   * SIGNATURE WORDS. Not "what does this person say most" — everyone says the
+   * same top words — but "what do they say far more than everyone else". Rate
+   * within their own output over the same rate across everyone else, with a
+   * floor on raw count so a word used twice can't top the chart.
+   */
+  const floor = minUses ?? Math.max(5, Math.round(msgs.length / 3000));
+  const signatureOf = (who) => {
+    const mine = wordsBy.get(who), myTotal = totalWordsBy.get(who) || 1;
+    const scored = [];
+    for (const [w, n] of mine) {
+      if (n < floor) continue;
+      let othersN = 0, othersTotal = 0;
+      for (const [other, map] of wordsBy) {
+        if (other === who) continue;
+        othersN += map.get(w) ?? 0;
+        othersTotal += totalWordsBy.get(other) ?? 0;
+      }
+      const otherRate = othersTotal ? othersN / othersTotal : 0;
+      // otherRate 0 means nobody else has ever used it — more interesting than
+      // any ratio, so it's flagged (null) rather than scored.
+      scored.push({ word: w, n, ratio: otherRate ? (n / myTotal) / otherRate : null });
+    }
+    scored.sort((a, b) => (b.ratio ?? Infinity) - (a.ratio ?? Infinity));
+    return scored.slice(0, 8);
+  };
+
+  const years = [...new Set(msgs.map((m) => new Date(m.ms).getFullYear()))].sort();
+  const rows = new Map();
+  for (const [who, n] of per) {
+    const hours = hourBy.get(who), ls = lens.get(who);
+    rows.set(who, {
+      who, n,
+      byYear: Object.fromEntries(years.map((y) => [y, perYear.get(who).get(y) ?? 0])),
+      hours,
+      peakHour: hours.indexOf(Math.max(...hours)),
+      night: hours.slice(0, 5).reduce((a, b) => a + b, 0),
+      avgLen: ls.reduce((a, b) => a + b, 0) / ls.length,
+      medianLen: median(ls),
+      maxLen: Math.max(...ls),
+      starts: starters.get(who) ?? 0,
+      lastWord: enders.get(who) ?? 0,
+      medianReply: median(replies.get(who) ?? []),
+      doubles: doubles.get(who) ?? 0,
+      laughs: laughs.get(who) ?? 0,
+      questions: questions.get(who) ?? 0,
+      vocab: vocab.get(who).size,
+      topWords: topN(wordsBy.get(who), top).map(([word, n]) => ({ word, n })),
+      topEmoji: topN(emojiBy.get(who), 8).map(([emoji, n]) => ({ emoji, n })),
+      signature: signatureOf(who),
+    });
+  }
+  return { rows, minUses: floor, wordsBy, totalWordsBy, firstUse, emojiAll };
+}
+
 export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 * 3600_000, names, canonical }) {
   const people = [...new Set(msgs.map((m) => m.who))];
   const total = msgs.length;
