@@ -608,17 +608,40 @@ What real runs taught, each now a test in `test/excerpts.test.mjs`:
 - **Search must not be "the newest N".** It walked backwards from the end and
   stopped at 40 hits. In a busy chat a common word hits 40 times in a few
   weeks, so on every real chat measured, **100% of search lines were from the
-  current year**. That made answers feel recency-biased, and search is the only
-  rule that responds to the question. Search now has no hit cap, only a
-  character budget (`EXCERPT_SEARCH_CAP`, 20k; it was 8k). Each term takes
-  `spaced()` picks across *all* its matches, and the terms round-robin, so a
-  common word can't starve a rare one. `searchMatches` carries the per-term
-  totals, and the brief prints "60 of 1,234 matches, evenly spaced", or a model
-  reads the hits as every use of the word. Spacing is proportional to volume,
-  so a chat that got busier still leans recent, but only as much as the
-  conversation itself does. Measure with a year histogram per rule before
-  believing a theory about bias. Note the floor too: this library's copy
-  starts 2022-04-23, so nothing can look further back than that.
+  current year**. Every answer to "what does the group think of X" described
+  the last month. Search is the one rule that responds to the question, so it
+  is built to cover the whole history:
+  - **Send everything when it fits.** `EXCERPT_SEARCH_CAP` is 60k chars
+    (~15k tokens, a few cents an ask). It was 8k. For a specific subject that
+    is usually every match: all 522 Knicks mentions in a 164k-message group.
+    Local models keep 2k (`EXCERPT_SEARCH_CAP_LOCAL`), because search sits on
+    top of the budget and anything bigger front-truncates their prompt.
+  - **Otherwise, each (year, sender) stratum takes a turn.** A quiet 2022 and
+    a quiet member get lines before a busy 2026 gets its second round. Within
+    a stratum `progressive()` orders picks by bit-reversal, so wherever the
+    budget runs out, what was taken is an even spread. Terms round-robin too,
+    so a common word can't starve a rare one. Elie in the same group:
+    2022–2023 complete, 2024 166/174, 2025 207/274, 2026 206/319.
+  - **The reply comes with the mention.** A hit carries the next message if
+    someone else sent it within 30 minutes and it isn't itself a hit. "Elie
+    got engaged" is the mention; the opinion is the reply.
+  - **The model is told what it has.** `searchMatches` and `searchCoverage`
+    give per-term and per-year shown/total. The brief prints "all 522 matches"
+    or "803 of 991 … (by year, shown/total: 2022 92, …, 2026 206/319)", and
+    `AI_RULES` says to attribute views by person and date and to report
+    change over time. Without that, a model reads a sample as every use of
+    the word, and can't tell a year that was cut from one where little was
+    said.
+  - **Filler words in the question are not searched.** `QUESTION_STOP` drops
+    *everyone, opinions, think, feel, consensus, whats …* from questions, but
+    not from `STOP`, because they are real vocabulary in messages. Before
+    this, "what does everyone think about Elie" split the budget between
+    "elie" and "everyone".
+
+  Matching is still by substring, so nicknames and "he" are missed. The typed
+  search term is the way to add a synonym. Measure with a year histogram per
+  rule before believing a theory about bias. Also note the floor: this
+  library's copy starts 2022-04-23, so nothing can look further back.
 
 **The grounding sentence is per scope.** `AI_GROUNDING` says "statistics plus
 a chosen subset of real messages" for chat and person and "statistics, not raw
