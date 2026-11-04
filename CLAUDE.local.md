@@ -587,7 +587,7 @@ with their own budget on top. Every line carries the rule that chose it, and
 `renderExcerpts()` opens by saying so and that this is a subset — a model
 reading real quotes otherwise treats them as the full record.
 
-Two things the first real run taught, both now tests in `test/excerpts.test.mjs`:
+What real runs taught, each now a test in `test/excerpts.test.mjs`:
 
 - **The targeted rules will eat the whole budget if allowed to.** On a
   26-thread person, longest-per-thread alone took 25k of a 40k budget and ten
@@ -605,6 +605,20 @@ Two things the first real run taught, both now tests in `test/excerpts.test.mjs`
   `personThreads()` names unnamed groups by roster as the overview does, and
   same-named threads get their span appended — `Crew (2023–2024)` — then `#id`
   if that still collides.
+- **Search must not be "the newest N".** It walked backwards from the end and
+  stopped at 40 hits. In a busy chat a common word hits 40 times in a few
+  weeks, so on every real chat measured, **100% of search lines were from the
+  current year**. That made answers feel recency-biased, and search is the only
+  rule that responds to the question. Search now has no hit cap, only a
+  character budget (`EXCERPT_SEARCH_CAP`, 20k; it was 8k). Each term takes
+  `spaced()` picks across *all* its matches, and the terms round-robin, so a
+  common word can't starve a rare one. `searchMatches` carries the per-term
+  totals, and the brief prints "60 of 1,234 matches, evenly spaced", or a model
+  reads the hits as every use of the word. Spacing is proportional to volume,
+  so a chat that got busier still leans recent, but only as much as the
+  conversation itself does. Measure with a year histogram per rule before
+  believing a theory about bias. Note the floor too: this library's copy
+  starts 2022-04-23, so nothing can look further back than that.
 
 **The grounding sentence is per scope.** `AI_GROUNDING` says "statistics plus
 a chosen subset of real messages" for chat and person and "statistics, not raw
