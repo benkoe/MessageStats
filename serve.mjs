@@ -454,12 +454,16 @@ function around(chatId, { at, merge, mergeIds, span = 40 }) {
  * the grounding rules sit — so it gets a quarter and the UI says so.
  */
 const EXCERPT_BUDGET = { chat: 20_000, person: 40_000 };
-const EXCERPT_SEARCH_CAP = 20_000;
+// Search is the one layer that answers the question asked, so it gets the
+// most: 60k chars (~15k tokens) is enough to send every match for most
+// specific subjects, which is the only way "what does the group think of X"
+// is answered from the whole history. Local models keep the old 2k — on top
+// of the budget, so anything bigger front-truncates their prompt.
+const EXCERPT_SEARCH_CAP = 60_000;
+const EXCERPT_SEARCH_CAP_LOCAL = 2_000;
 const LOCAL_BUDGET_SCALE = 0.25;
 const budgetFor = (scope, cfg) => Math.round(EXCERPT_BUDGET[scope] * (cfg.local ? LOCAL_BUDGET_SCALE : 1));
-// The search layer sits on top of the budget, so it scales the same way or a
-// local model's prompt is front-truncated anyway.
-const searchCapFor = (cfg) => Math.round(EXCERPT_SEARCH_CAP * (cfg.local ? LOCAL_BUDGET_SCALE : 1));
+const searchCapFor = (cfg) => (cfg.local ? EXCERPT_SEARCH_CAP_LOCAL : EXCERPT_SEARCH_CAP);
 /** Threads where someone sent fewer messages than this are counted, not read. The env hook is for tests. */
 const PERSON_FLOOR = Number(process.env.MESSAGESTATS_PERSON_FLOOR) || 10;
 
@@ -487,7 +491,13 @@ const AI_RULES = `What good looks like:
 Be specific and be funny where the data is funny. Skip preamble.
 
 Answer the whole question. If it asks about the people in the chat, cover every
-one of them rather than the first few — a partial list is a wrong answer.`;
+one of them rather than the first few — a partial list is a wrong answer.
+
+SEARCH sections, when present, are drawn from the whole history — every year and every
+sender in turn — not the most recent stretch. For a question about what people think of
+someone or something, use all of it: say who held which view and when, with dates, and
+whether it changed over the years. Never let the latest lines stand in for the whole
+history, and if a year or a person has no matches, say so rather than filling the gap.`;
 
 /**
  * The one line that changes with scope, in front of the shared rules.
@@ -701,13 +711,21 @@ function renderExcerpts(ex, { subject }) {
     }
   }
   const terms = [...new Set(ex.lines.filter((l) => l.term).map((l) => l.term))];
-  // Say how many matched in all: a model shown 60 hits otherwise reads them as
-  // every time the word was ever used.
+  // Say how many matched in all, and per year: a model shown a sample
+  // otherwise reads it as every time the word was ever used, and cannot tell
+  // a year with few lines because little was said from one that was cut.
   for (const t of terms) {
     const shown = ex.lines.filter((l) => l.term === t);
-    const total = ex.searchMatches?.[t];
-    L.push(`SEARCH "${t}"${total > shown.length ? ` — ${shown.length} of ${total.toLocaleString("en-US")} matches, evenly spaced across the whole span` : ""}:`);
-    for (const l of shown) L.push(line(l));
+    const total = ex.searchMatches?.[t] ?? shown.length;
+    const years = Object.entries(ex.searchCoverage?.[t] ?? {}).map(([y, [s, n]]) => (s === n ? `${y} ${n}` : `${y} ${s}/${n}`)).join(", ");
+    const head = shown.length >= total
+      ? `all ${total.toLocaleString("en-US")} matches`
+      : `${shown.length} of ${total.toLocaleString("en-US")} matches, every year and every sender taking turns, evenly spaced within each`;
+    L.push(`SEARCH "${t}" — ${head}${years ? ` (by year, shown/total: ${years})` : ""}:`);
+    for (const l of shown) {
+      L.push(line(l));
+      if (l.after && l.why.length === 1) L.push(`    ↳ reply, ${l.after.who}: ${one(l.after.text)}`);
+    }
   }
   return L.join("\n");
 }

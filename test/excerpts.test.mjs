@@ -56,6 +56,43 @@ test("search spans every year, not the newest hits, and a common term cannot cro
   assert.ok(ex.searchUsed <= 2000);
 });
 
+test("opinion questions search for the subject, not the asking", () => {
+  assert.deepEqual(questionTerms("what does everyone think about Elie?"), ["elie"]);
+  assert.deepEqual(questionTerms("what are peoples opinions on the knicks"), ["knicks"]);
+  assert.deepEqual(questionTerms("how does the group feel about Shlomo moving to israel"), ["shlomo", "moving", "israel"]);
+});
+
+test("a quiet year and a quiet sender get lines before a busy one gets more", () => {
+  const msgs = [];
+  const push = (y, k, who) => msgs.push({ guid: `${y}-${who}-${k}`, who, ms: new Date(y, 0, 1, 0, k).getTime(),
+    text: "the knicks again", len: 16, thread: "G", isGroup: true });
+  for (let k = 0; k < 500; k += 1) push(2026, k, "Ann");   // a loud recent year from one person
+  push(2022, 0, "Bob"); push(2022, 1, "Bob");              // a quiet old year from someone else
+  push(2024, 0, "Cat");
+  msgs.sort((a, b) => a.ms - b.ms);
+  const ex = excerpts(msgs, { budget: 0, searchCharCap: 160, terms: ["knicks"] });   // room for 10 lines
+  const got = ex.lines.map((l) => `${new Date(l.ms).getFullYear()} ${l.who}`);
+  assert.equal(got.length, 10);
+  assert.equal(got.filter((g) => g === "2022 Bob").length, 2);
+  assert.equal(got.filter((g) => g === "2024 Cat").length, 1);
+  assert.deepEqual(ex.searchCoverage.knicks, { 2022: [2, 2], 2024: [1, 1], 2026: [7, 500] });
+});
+
+test("every match is sent when it fits, with the reply that carries the opinion", () => {
+  const t0 = new Date(2023, 3, 1).getTime();
+  const msgs = [
+    { guid: "a", who: "Ann", ms: t0, text: "elie got engaged", len: 16, thread: "G", isGroup: true },
+    { guid: "b", who: "Bob", ms: t0 + 60_000, text: "finally, she is great", len: 21, thread: "G", isGroup: true },
+    { guid: "c", who: "Cat", ms: t0 + 86_400_000, text: "elie is late again", len: 18, thread: "G", isGroup: true },
+    { guid: "d", who: "Cat", ms: t0 + 86_460_000, text: "typical", len: 7, thread: "G", isGroup: true },
+  ];
+  const ex = excerpts(msgs, { budget: 0, terms: ["elie"] });
+  assert.deepEqual(ex.lines.map((l) => l.guid), ["a", "c"]);
+  assert.equal(ex.lines[0].after.text, "finally, she is great");   // somebody else, within the half hour
+  assert.equal(ex.lines[1].after, undefined);                      // same sender is not a reply
+  assert.equal(ex.searchMatches.elie, 2);
+});
+
 test("no terms and a tiny budget never throw", () => {
   assert.deepEqual(questionTerms("what about them?"), []);
   const ex = excerpts(corpus, { who: "Ann", budget: 5 });

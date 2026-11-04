@@ -709,6 +709,21 @@ export function loadReactions(db, ids, { byGuid, label }) {
 }
 
 /**
+ * Words about the asking, not the subject. "What does everyone think about
+ * Elie" searched for "everyone" as well as "elie", the two split the budget,
+ * and half the lines were whatever happened to say "everyone". Only for
+ * questions — these are real vocabulary in messages, so they stay out of STOP.
+ */
+const QUESTION_STOP = new Set(
+  ("everyone everybody anyone anybody someone people peoples person persons group groups chat chats " +
+   "guys members member opinion opinions think thinks thought thoughts feel feels feeling feelings " +
+   "view views stance take takes consensus whats hows whos overall general generally actually " +
+   "about talk talks talking talked said says saying tell tells mention mentioned mentions " +
+   "message messages text texts time times ever always never year years changed change changes " +
+   "over lately recently subject topic topics regarding toward towards").split(/\s+/)
+);
+
+/**
  * Words worth searching for in a question. "what did Ann say about coming
  * over" is a question about "coming": stop words carry no topic, three-letter
  * words are mostly names and noise, and eight terms is already a wide net.
@@ -716,7 +731,7 @@ export function loadReactions(db, ids, { byGuid, label }) {
 export function questionTerms(question) {
   const out = [];
   for (const w of words(String(question ?? ""))) {
-    if (w.length < 4 || STOP.has(w) || out.includes(w)) continue;
+    if (w.length < 4 || STOP.has(w) || QUESTION_STOP.has(w) || out.includes(w)) continue;
     out.push(w);
     if (out.length === 8) break;
   }
@@ -726,6 +741,26 @@ export function questionTerms(question) {
 /** Nothing to read once links and attachment placeholders are gone. */
 const nothingToRead = (text) => !text.replace(URL_RE, " ").replace(EMAIL_RE, " ").replace(/[\uFFFC\s]+/g, "").length;
 const EXCERPT_LINE_MAX = 400;
+
+/**
+ * Every element of `list`, reordered so that any prefix is spread evenly
+ * across it — middle first, then the quarters, then the eighths (bit-reversal
+ * order). A budget that runs out part-way through still leaves an even spread
+ * rather than the first few.
+ */
+function progressive(list) {
+  const n = list.length;
+  if (n <= 2) return list;
+  let bits = 0;
+  while ((1 << bits) < n) bits += 1;
+  const out = [];
+  for (let k = 0; k < (1 << bits); k += 1) {
+    let r = 0;
+    for (let b = 0; b < bits; b += 1) if (k & (1 << b)) r |= 1 << (bits - 1 - b);
+    if (r < n) out.push(list[r]);
+  }
+  return out;
+}
 const EXCERPT_CAPS = { reacted: 60, laughed: 60, longest: 4, repeated: 10, unanswered: 10 };
 /**
  * The share of the budget the targeted rules (1–5) may use between them, so
@@ -755,7 +790,7 @@ const SPREAD_RESERVE = 0.4;
  * hits have their own, on top.
  */
 export function excerpts(msgs, {
-  who = null, reactions = null, budget = 20_000, caps = {}, searchCharCap = 20_000,
+  who = null, reactions = null, budget = 20_000, caps = {}, searchCharCap = 60_000,
   laughWindowMs = 300_000, unansweredMs = 3_600_000, terms = [],
 } = {}) {
   const cap = { ...EXCERPT_CAPS, ...caps };
@@ -902,56 +937,76 @@ export function excerpts(msgs, {
   // 7. Search — the words of the question, and anything typed. Its own
   // budget, on top, so a pointed question is never crowded out by the rest.
   //
-  // Evenly spaced across every match, never the newest N. It used to walk
-  // backwards from the end with a 40-hit cap, and in a busy chat a common
-  // word hits 40 times within weeks — so the one rule that answers the
-  // question was 100% current-year on every real chat measured, and answers
-  // read as recency-biased. Each term gets its own queue and they take turns,
-  // so a common term cannot crowd out a rare one; the character budget is the
-  // only limit.
+  // Built so that "what does the group think of X" is answered from the whole
+  // history, not the latest stretch of it. It used to walk backwards from the
+  // end with a 40-hit cap, and in a busy chat a common word hits 40 times
+  // within weeks, so the one rule that answers the question was 100%
+  // current-year on every real chat measured. Now:
+  //  - every match is sent when the budget allows, and the brief says so;
+  //  - otherwise each (year, sender) stratum takes a turn, so a quiet 2022
+  //    and a quiet member get lines before a busy 2026 gets its second round;
+  //  - within a stratum, picks are progressively spaced, so any prefix is an
+  //    even spread of that stratum rather than its first few;
+  //  - terms take turns too, so a common word cannot starve a rare one;
+  //  - a hit carries the next message if someone else sent it within half an
+  //    hour, because "X got engaged" is the mention and the reply is the
+  //    opinion.
   const needles = [...new Set(terms.map((t) => String(t).toLowerCase()).filter(Boolean))];
-  const searchMatches = {};
+  const searchMatches = {}, searchCoverage = {};
   if (needles.length) {
+    const termOf = new Map();
     const hits = new Map(needles.map((t) => [t, []]));
     for (const i of cands) {
       const low = msgs[i].text.toLowerCase();
       const term = needles.find((t) => low.includes(t));
-      if (term) hits.get(term).push(i);
+      if (term) { hits.get(term).push(i); termOf.set(i, term); }
     }
-    const queues = [];
+    const yearOf = (i) => new Date(msgs[i].ms).getFullYear();
+    const terms_ = [];
     for (const [term, idxs] of hits) {
       searchMatches[term] = idxs.length;
-      if (!idxs.length) continue;
-      // Lines already chosen by another rule cost nothing; tag them and move on.
-      const fresh = [];
+      const cov = (searchCoverage[term] = {});
+      for (const i of idxs) (cov[yearOf(i)] ??= [0, 0])[1] += 1;
+      const strata = new Map();
       for (const i of idxs) {
         const have = picked.get(msgs[i].guid);
-        if (!have) { fresh.push(i); continue; }
-        if (!have.why.includes("search")) { have.why.push("search"); tally("search"); }
-        have.term ??= term;
+        if (have) {
+          // Already chosen by another rule: free, and it counts as shown.
+          if (!have.why.includes("search")) { have.why.push("search"); tally("search"); }
+          have.term ??= term;
+          cov[yearOf(i)][0] += 1;
+          continue;
+        }
+        const key = `${yearOf(i)}|${msgs[i].who}`;
+        if (!strata.has(key)) strata.set(key, []);
+        strata.get(key).push(i);
       }
-      const avg = Math.max(1, fresh.reduce((s, i) => s + Math.min(msgs[i].len, EXCERPT_LINE_MAX + 1), 0) / (fresh.length || 1));
-      const share = Math.max(1, Math.floor(searchCharCap / needles.length / avg));
-      queues.push({ term, q: spaced(fresh, share) });
+      if (strata.size) terms_.push({ term, queues: [...strata.values()].map(progressive) });
     }
-    // Round-robin; a line that does not fit is skipped, a shorter one still might.
+    const replyMs = 1_800_000;
     for (let k = 0, any = true; any && searchUsed < searchCharCap; k += 1) {
       any = false;
-      for (const { term, q } of queues) {
+      for (const { term, queues } of terms_) for (const q of queues) {
         if (k >= q.length) continue;
         any = true;
-        const m = msgs[q[k]];
-        const text = cut(m.text);
-        if (searchUsed + text.length > searchCharCap) continue;
-        searchUsed += text.length;
-        picked.set(m.guid, { guid: m.guid, thread: threadOf(m), who: m.who, ms: m.ms, text, why: ["search"], term });
+        const i = q[k], m = msgs[i];
+        const line = { guid: m.guid, thread: threadOf(m), who: m.who, ms: m.ms, text: cut(m.text), why: ["search"], term };
+        const n = nextIn.get(i);
+        if (n != null && msgs[n].who !== m.who && msgs[n].ms - m.ms <= replyMs && !termOf.has(n)
+            && !nothingToRead(msgs[n].text)) line.after = ref(msgs[n]);
+        let cost = line.text.length + (line.after?.text.length ?? 0);
+        if (searchUsed + cost > searchCharCap && line.after) { delete line.after; cost = line.text.length; }
+        if (searchUsed + cost > searchCharCap) continue;
+        searchUsed += cost;
+        picked.set(m.guid, line);
         tally("search");
+        searchCoverage[term][yearOf(i)][0] += 1;
       }
     }
   }
 
   const lines = [...picked.values()].sort((a, b) => a.ms - b.ms);
-  return { lines, counts, budget, used, searchUsed, searchMatches };
+  return { lines, counts, budget, used, searchUsed, searchMatches, searchCoverage };
 }
 
 export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 * 3600_000, names, canonical }) {
