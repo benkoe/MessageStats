@@ -454,7 +454,7 @@ function around(chatId, { at, merge, mergeIds, span = 40 }) {
  * the grounding rules sit — so it gets a quarter and the UI says so.
  */
 const EXCERPT_BUDGET = { chat: 20_000, person: 40_000 };
-const EXCERPT_SEARCH_CAP = 8_000;
+const EXCERPT_SEARCH_CAP = 20_000;
 const LOCAL_BUDGET_SCALE = 0.25;
 const budgetFor = (scope, cfg) => Math.round(EXCERPT_BUDGET[scope] * (cfg.local ? LOCAL_BUDGET_SCALE : 1));
 // The search layer sits on top of the budget, so it scales the same way or a
@@ -701,9 +701,13 @@ function renderExcerpts(ex, { subject }) {
     }
   }
   const terms = [...new Set(ex.lines.filter((l) => l.term).map((l) => l.term))];
+  // Say how many matched in all: a model shown 60 hits otherwise reads them as
+  // every time the word was ever used.
   for (const t of terms) {
-    L.push(`SEARCH "${t}":`);
-    for (const l of ex.lines.filter((l) => l.term === t)) L.push(line(l));
+    const shown = ex.lines.filter((l) => l.term === t);
+    const total = ex.searchMatches?.[t];
+    L.push(`SEARCH "${t}"${total > shown.length ? ` — ${shown.length} of ${total.toLocaleString("en-US")} matches, evenly spaced across the whole span` : ""}:`);
+    for (const l of shown) L.push(line(l));
   }
   return L.join("\n");
 }

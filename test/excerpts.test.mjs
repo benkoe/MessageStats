@@ -40,6 +40,22 @@ test("search terms come from the question", () => {
   assert.ok(ex.lines.every((l) => l.term === "coming"));
 });
 
+test("search spans every year, not the newest hits, and a common term cannot crowd out a rare one", () => {
+  const msgs = [];
+  for (let y = 2020; y < 2026; y += 1) for (let k = 0; k < 200; k += 1)
+    msgs.push({ guid: `${y}-${k}`, who: "Ann", ms: new Date(y, 0, 1 + k).getTime(),
+      text: "going to the beach", len: 18, thread: "T", isGroup: false });
+  msgs.push({ guid: "rare", who: "Ann", ms: new Date(2021, 5, 1).getTime(), text: "the wedding toast", len: 17, thread: "T", isGroup: false });
+  msgs.sort((a, b) => a.ms - b.ms);
+  const ex = excerpts(msgs, { budget: 0, searchCharCap: 2000, terms: ["beach", "wedding"] });
+  const beach = ex.lines.filter((l) => l.term === "beach");
+  assert.ok(beach.length > 40);                                                    // no 40-hit ceiling
+  assert.equal(new Set(beach.map((l) => new Date(l.ms).getFullYear())).size, 6);   // every year, not just the last
+  assert.ok(ex.lines.some((l) => l.guid === "rare"));
+  assert.deepEqual(ex.searchMatches, { beach: 1200, wedding: 1 });
+  assert.ok(ex.searchUsed <= 2000);
+});
+
 test("no terms and a tiny budget never throw", () => {
   assert.deepEqual(questionTerms("what about them?"), []);
   const ex = excerpts(corpus, { who: "Ann", budget: 5 });

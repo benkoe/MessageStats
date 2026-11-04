@@ -726,7 +726,7 @@ export function questionTerms(question) {
 /** Nothing to read once links and attachment placeholders are gone. */
 const nothingToRead = (text) => !text.replace(URL_RE, " ").replace(EMAIL_RE, " ").replace(/[\uFFFC\s]+/g, "").length;
 const EXCERPT_LINE_MAX = 400;
-const EXCERPT_CAPS = { reacted: 60, laughed: 60, longest: 4, repeated: 10, unanswered: 10, search: 40 };
+const EXCERPT_CAPS = { reacted: 60, laughed: 60, longest: 4, repeated: 10, unanswered: 10 };
 /**
  * The share of the budget the targeted rules (1–5) may use between them, so
  * the spread always has the rest. On a real 26-thread person, longest-per-
@@ -755,7 +755,7 @@ const SPREAD_RESERVE = 0.4;
  * hits have their own, on top.
  */
 export function excerpts(msgs, {
-  who = null, reactions = null, budget = 20_000, caps = {}, searchCharCap = 8_000,
+  who = null, reactions = null, budget = 20_000, caps = {}, searchCharCap = 20_000,
   laughWindowMs = 300_000, unansweredMs = 3_600_000, terms = [],
 } = {}) {
   const cap = { ...EXCERPT_CAPS, ...caps };
@@ -901,32 +901,57 @@ export function excerpts(msgs, {
 
   // 7. Search — the words of the question, and anything typed. Its own
   // budget, on top, so a pointed question is never crowded out by the rest.
+  //
+  // Evenly spaced across every match, never the newest N. It used to walk
+  // backwards from the end with a 40-hit cap, and in a busy chat a common
+  // word hits 40 times within weeks — so the one rule that answers the
+  // question was 100% current-year on every real chat measured, and answers
+  // read as recency-biased. Each term gets its own queue and they take turns,
+  // so a common term cannot crowd out a rare one; the character budget is the
+  // only limit.
   const needles = [...new Set(terms.map((t) => String(t).toLowerCase()).filter(Boolean))];
+  const searchMatches = {};
   if (needles.length) {
-    let found = 0;
-    for (let c = cands.length - 1; c >= 0 && found < cap.search; c -= 1) {
-      const i = cands[c], m = msgs[i];
-      const low = m.text.toLowerCase();
+    const hits = new Map(needles.map((t) => [t, []]));
+    for (const i of cands) {
+      const low = msgs[i].text.toLowerCase();
       const term = needles.find((t) => low.includes(t));
-      if (!term) continue;
-      const have = picked.get(m.guid);
-      if (have) {
+      if (term) hits.get(term).push(i);
+    }
+    const queues = [];
+    for (const [term, idxs] of hits) {
+      searchMatches[term] = idxs.length;
+      if (!idxs.length) continue;
+      // Lines already chosen by another rule cost nothing; tag them and move on.
+      const fresh = [];
+      for (const i of idxs) {
+        const have = picked.get(msgs[i].guid);
+        if (!have) { fresh.push(i); continue; }
         if (!have.why.includes("search")) { have.why.push("search"); tally("search"); }
         have.term ??= term;
-        found += 1;
-        continue;
       }
-      const text = cut(m.text);
-      if (searchUsed + text.length > searchCharCap) break;
-      searchUsed += text.length;
-      picked.set(m.guid, { guid: m.guid, thread: threadOf(m), who: m.who, ms: m.ms, text, why: ["search"], term });
-      tally("search");
-      found += 1;
+      const avg = Math.max(1, fresh.reduce((s, i) => s + Math.min(msgs[i].len, EXCERPT_LINE_MAX + 1), 0) / (fresh.length || 1));
+      const share = Math.max(1, Math.floor(searchCharCap / needles.length / avg));
+      queues.push({ term, q: spaced(fresh, share) });
+    }
+    // Round-robin; a line that does not fit is skipped, a shorter one still might.
+    for (let k = 0, any = true; any && searchUsed < searchCharCap; k += 1) {
+      any = false;
+      for (const { term, q } of queues) {
+        if (k >= q.length) continue;
+        any = true;
+        const m = msgs[q[k]];
+        const text = cut(m.text);
+        if (searchUsed + text.length > searchCharCap) continue;
+        searchUsed += text.length;
+        picked.set(m.guid, { guid: m.guid, thread: threadOf(m), who: m.who, ms: m.ms, text, why: ["search"], term });
+        tally("search");
+      }
     }
   }
 
   const lines = [...picked.values()].sort((a, b) => a.ms - b.ms);
-  return { lines, counts, budget, used, searchUsed };
+  return { lines, counts, budget, used, searchUsed, searchMatches };
 }
 
 export function analyze(db, { ids, msgs, byGuid, label, chat, top = 10, gap = 6 * 3600_000, names, canonical }) {
